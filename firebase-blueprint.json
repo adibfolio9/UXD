@@ -457,6 +457,49 @@
         "readyToRelocateIn",
         "createdAt"
       ]
+    },
+    "PublicFormRoute": {
+      "title": "PublicFormRoute",
+      "description": "Public clean-URL form route mapping (no PII) linking a vanity form slug to its workspace owner UID.",
+      "type": "object",
+      "properties": {
+        "formId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "routePath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "formId",
+        "ownerUid",
+        "routePath",
+        "active",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -483,6 +526,10 @@
     "/users/{userId}/leadSubmissions/{submissionId}": {
       "schema": { "$ref": "#/entities/PublicLeadSubmission" },
       "description": "Write-only incoming submissions from the shareable Lead Intake Form."
+    },
+    "/publicForms/{formId}": {
+      "schema": { "$ref": "#/entities/PublicFormRoute" },
+      "description": "Public vanity slug lookup mapping clean form URLs (e.g. UXDVault/Submit your Application) to workspace owner UID."
     }
   }
 }

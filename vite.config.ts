@@ -25,6 +25,17 @@ export default defineConfig(() => {
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
           }
+          const distIndex = path.resolve(distDir, 'index.html');
+          if (fs.existsSync(distIndex)) {
+            const vanityDirs = [
+              path.resolve(distDir, 'UXDVault/Submit your Application'),
+              path.resolve(distDir, 'UXDVault/Submit-your-Application'),
+            ];
+            for (const dir of vanityDirs) {
+              fs.mkdirSync(dir, {recursive: true});
+              fs.copyFileSync(distIndex, path.resolve(dir, 'index.html'));
+            }
+          }
         },
       },
     ],

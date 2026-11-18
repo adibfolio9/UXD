@@ -27,7 +27,7 @@ import {
   isExternalUrlValue,
 } from '../utils/statusStyles';
 import { buildStandaloneLeadFormHtml } from '../utils/standaloneFormHtml';
-import { submitPublicLeadForm } from '../services/firestoreWorkspace';
+import { PUBLIC_FORM_PATH, submitPublicLeadForm } from '../services/firestoreWorkspace';
 import { CandidateAvatar } from './CandidateAvatar';
 import { ResumePreviewModal } from './ResumePreviewModal';
 
@@ -281,8 +281,8 @@ export function LeadFormView(props: LeadFormViewProps) {
       const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
       try {
         const parsed = new URL(withScheme);
-        parsed.pathname = '/';
-        parsed.search = `?lead-form=${encodeURIComponent(props.userUid)}`;
+        parsed.pathname = PUBLIC_FORM_PATH;
+        parsed.search = '';
         parsed.hash = '';
         return { publicShareUrl: parsed.toString(), isDevOrigin: devHost, publishedUrlValid: true };
       } catch {
@@ -294,8 +294,8 @@ export function LeadFormView(props: LeadFormViewProps) {
     if (linkSourceMode === 'shared' && devHost) {
       url.hostname = url.hostname.replace(/^ais-dev-/, 'ais-pre-');
     }
-    url.pathname = '/';
-    url.search = `?lead-form=${encodeURIComponent(props.userUid)}`;
+    url.pathname = PUBLIC_FORM_PATH;
+    url.search = '';
     url.hash = '';
     return { publicShareUrl: url.toString(), isDevOrigin: devHost, publishedUrlValid: true };
   }, [isWorkspace, props, linkSourceMode, publishedOriginInput]);

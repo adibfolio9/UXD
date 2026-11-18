@@ -168,6 +168,19 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidPublicFormRoute(data, formId) {
+      return data.keys().hasAll(['formId', 'ownerUid', 'routePath', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['formId', 'ownerUid', 'routePath', 'active', 'createdAt', 'updatedAt'])
+        && isValidId(data.formId)
+        && data.formId == formId
+        && isValidId(data.ownerUid)
+        && data.ownerUid == request.auth.uid
+        && data.routePath is string && data.routePath.size() >= 1 && data.routePath.size() <= 160
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     match /users/{userId}/private/{docId} {
       allow get: if isVerifiedUser() && isOwner(userId) && isValidId(docId) && docId == 'profile';
       allow list: if false;
@@ -276,6 +289,29 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/users/$(userId)/workspaces/default);
       allow update: if false;
       allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(submissionId);
+    }
+
+    match /publicForms/{formId} {
+      allow get: if isValidId(formId);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(formId)
+        && isValidPublicFormRoute(incoming(), formId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/default);
+      allow update: if isVerifiedUser()
+        && isValidId(formId)
+        && isValidPublicFormRoute(incoming(), formId)
+        && existing().ownerUid == request.auth.uid
+        && incoming().formId == existing().formId
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['routePath', 'active', 'updatedAt']);
+      allow delete: if isVerifiedUser()
+        && isValidId(formId)
+        && existing().ownerUid == request.auth.uid;
     }
   }
 }

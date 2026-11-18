@@ -22,10 +22,14 @@ import { TopBar } from './components/TopBar';
 import { INITIAL_WORKSPACE_STATE, TEAM_MEMBERS } from './data/seedData';
 import { auth } from './firebase';
 import {
+  PUBLIC_FORM_SLUG_ID,
   PendingLeadSubmission,
+  ensurePublicFormRouteRegistered,
   ensureUserAccountAndWorkspaceSeeded,
   ingestLeadSubmissionsToCloud,
+  isPublicLeadFormPathname,
   resetWorkspaceInCloud,
+  resolvePublicFormOwnerUid,
   saveBulkMovesToCloud,
   saveImportToCloud,
   savePresetApplyToCloud,
@@ -74,6 +78,19 @@ export default function App() {
 
   const cloudCandidateIdsRef = useRef<Set<string>>(new Set());
 
+  const [isVanityFormPath, setIsVanityFormPath] = useState<boolean>(() => {
+    try {
+      const hashPath = '/' + window.location.hash.replace(/^#\/?/, '');
+      return (
+        isPublicLeadFormPathname(window.location.pathname) ||
+        isPublicLeadFormPathname(hashPath)
+      );
+    } catch {
+      return false;
+    }
+  });
+  const [publicFormResolveError, setPublicFormResolveError] = useState(false);
+
   const [publicLeadFormOwnerUid, setPublicLeadFormOwnerUid] = useState<string | null>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -100,6 +117,25 @@ export default function App() {
   const [pendingLeadQueue, setPendingLeadQueue] = useState<PendingLeadSubmission[]>([]);
   const ingestingLeadsRef = useRef(false);
   const processedSubmissionIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!isVanityFormPath || publicLeadFormOwnerUid) return;
+    let cancelled = false;
+    setPublicFormResolveError(false);
+
+    void resolvePublicFormOwnerUid(PUBLIC_FORM_SLUG_ID).then((ownerUid) => {
+      if (cancelled) return;
+      if (ownerUid) {
+        setPublicLeadFormOwnerUid(ownerUid);
+      } else {
+        setPublicFormResolveError(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isVanityFormPath, publicLeadFormOwnerUid]);
 
   const [activeView, setActiveView] = useState<ViewMode>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<string | 'all'>('all');
@@ -161,6 +197,7 @@ export default function App() {
       try {
         await ensureUserAccountAndWorkspaceSeeded(currentUser);
         if (cancelled) return;
+        void ensurePublicFormRouteRegistered(currentUser.uid);
         unsubscribeSnapshot = subscribeToUserWorkspace(
           currentUser.uid,
           (snapshot) => {
@@ -351,6 +388,69 @@ export default function App() {
     return Boolean(auth.currentUser.emailVerified);
   };
 
+  const exitPublicFormToWorkspace = () => {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('lead-form');
+      url.searchParams.delete('form');
+      if (
+        url.pathname.toLowerCase().startsWith('/lead-form/') ||
+        isPublicLeadFormPathname(url.pathname)
+      ) {
+        url.pathname = '/';
+      }
+      if (
+        url.hash.toLowerCase().includes('lead-form') ||
+        url.hash.toLowerCase().includes('form=') ||
+        url.hash.toLowerCase().includes('uxdvault')
+      ) {
+        url.hash = '';
+      }
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      // Ignore URL history errors
+    }
+    setIsVanityFormPath(false);
+    setPublicFormResolveError(false);
+    setPublicLeadFormOwnerUid(null);
+  };
+
+  if (isVanityFormPath && !publicLeadFormOwnerUid) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F7] dark:bg-black flex items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-2xl border border-black/[0.08] dark:border-white/[0.12] bg-white dark:bg-[#1C1C1E] p-7 text-center space-y-4 shadow-[0_8px_30px_rgba(0,0,0,0.06)]">
+          <img
+            src="/assets/aistudio/image_9e6b3606.png"
+            alt="UXD Vault official logo"
+            referrerPolicy="no-referrer"
+            className="w-10 h-10 rounded-xl object-cover bg-black mx-auto shadow-[0_1px_2px_rgba(0,0,0,0.18)]"
+          />
+          {publicFormResolveError ? (
+            <>
+              <h1 className="text-lg font-display font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                Application Form Not Activated Yet
+              </h1>
+              <p className="text-xs text-[#6E6E73] dark:text-[#A1A1A6] leading-relaxed">
+                Sign in to your UXD Vault workspace once to activate the <span className="font-mono">UXDVault/Submit your Application</span> intake route.
+              </p>
+              <button
+                type="button"
+                onClick={exitPublicFormToWorkspace}
+                className="h-10 px-4 rounded-[10px] bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] text-white text-xs font-medium transition-colors"
+              >
+                Workspace Sign In
+              </button>
+            </>
+          ) : (
+            <p className="text-sm font-medium text-[#6E6E73] dark:text-[#A1A1A6]">
+              Loading application form...
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (publicLeadFormOwnerUid) {
     return (
       <LeadFormView
@@ -358,23 +458,7 @@ export default function App() {
         targetUid={publicLeadFormOwnerUid}
         isDark={isDark}
         onToggleTheme={() => setIsDark((prev) => !prev)}
-        onExitPublicMode={() => {
-          try {
-            const url = new URL(window.location.href);
-            url.searchParams.delete('lead-form');
-            url.searchParams.delete('form');
-            if (url.pathname.toLowerCase().startsWith('/lead-form/')) {
-              url.pathname = '/';
-            }
-            if (url.hash.toLowerCase().includes('lead-form') || url.hash.toLowerCase().includes('form=')) {
-              url.hash = '';
-            }
-            window.history.replaceState({}, '', url.toString());
-          } catch {
-            // Ignore URL history errors
-          }
-          setPublicLeadFormOwnerUid(null);
-        }}
+        onExitPublicMode={exitPublicFormToWorkspace}
       />
     );
   }

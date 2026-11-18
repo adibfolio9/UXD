@@ -953,3 +953,67 @@ export async function ingestLeadSubmissionsToCloud(
   }
 }
 
+export const PUBLIC_FORM_SLUG_ID = 'uxdvault-submit-your-application';
+export const PUBLIC_FORM_PATH = '/UXDVault/Submit%20your%20Application';
+export const PUBLIC_FORM_DISPLAY_PATH = '/UXDVault/Submit your Application';
+
+export function isPublicLeadFormPathname(pathname: string): boolean {
+  let decoded = pathname;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    decoded = pathname;
+  }
+  const normalized = decoded
+    .replace(/\/index\.html$/i, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+  return (
+    normalized === '/uxdvault/submit your application' ||
+    normalized === '/uxdvault/submit-your-application'
+  );
+}
+
+export async function ensurePublicFormRouteRegistered(uid: string): Promise<void> {
+  const ref = doc(db, 'publicForms', PUBLIC_FORM_SLUG_ID);
+  try {
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        formId: PUBLIC_FORM_SLUG_ID,
+        ownerUid: uid,
+        routePath: 'UXDVault/Submit your Application',
+        active: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      const data = snap.data();
+      if (data.ownerUid === uid && (!data.active || data.routePath !== 'UXDVault/Submit your Application')) {
+        await updateDoc(ref, {
+          routePath: 'UXDVault/Submit your Application',
+          active: true,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+  } catch {
+    // Non-fatal if another owner registered the slug or network is offline
+  }
+}
+
+export async function resolvePublicFormOwnerUid(
+  formId: string = PUBLIC_FORM_SLUG_ID
+): Promise<string | null> {
+  try {
+    const snap = await getDoc(doc(db, 'publicForms', formId));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    if (data.active === false) return null;
+    return typeof data.ownerUid === 'string' && data.ownerUid.trim()
+      ? data.ownerUid.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
