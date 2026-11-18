@@ -1,0 +1,6 @@
+{
+  "name": "Strata",
+  "description": "Project tracking SaaS workspace for arranging delivery statuses, Kanban lanes, and team workflows.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
