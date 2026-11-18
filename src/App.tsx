@@ -76,8 +76,23 @@ export default function App() {
 
   const [publicLeadFormOwnerUid, setPublicLeadFormOwnerUid] = useState<string | null>(() => {
     try {
-      const param = new URLSearchParams(window.location.search).get('lead-form');
-      return param && param.trim() ? param.trim() : null;
+      const params = new URLSearchParams(window.location.search);
+      const queryParam = params.get('lead-form') || params.get('form');
+      if (queryParam && queryParam.trim()) return queryParam.trim();
+
+      const hash = window.location.hash.replace(/^#/, '');
+      if (hash) {
+        const hashParams = new URLSearchParams(hash.startsWith('?') ? hash.slice(1) : hash);
+        const hashParam = hashParams.get('lead-form') || hashParams.get('form');
+        if (hashParam && hashParam.trim()) return hashParam.trim();
+        const hashPathMatch = hash.match(/^\/?lead-form\/([^/?#]+)/i);
+        if (hashPathMatch?.[1]) return decodeURIComponent(hashPathMatch[1]).trim();
+      }
+
+      const pathMatch = window.location.pathname.match(/^\/lead-form\/([^/?#]+)/i);
+      if (pathMatch?.[1]) return decodeURIComponent(pathMatch[1]).trim();
+
+      return null;
     } catch {
       return null;
     }
@@ -347,6 +362,13 @@ export default function App() {
           try {
             const url = new URL(window.location.href);
             url.searchParams.delete('lead-form');
+            url.searchParams.delete('form');
+            if (url.pathname.toLowerCase().startsWith('/lead-form/')) {
+              url.pathname = '/';
+            }
+            if (url.hash.toLowerCase().includes('lead-form') || url.hash.toLowerCase().includes('form=')) {
+              url.hash = '';
+            }
             window.history.replaceState({}, '', url.toString());
           } catch {
             // Ignore URL history errors

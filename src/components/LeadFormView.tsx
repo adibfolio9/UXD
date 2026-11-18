@@ -3,9 +3,11 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Download,
   ExternalLink,
   Eye,
   FileText,
+  Link2,
   Moon,
   RotateCcw,
   Send,
@@ -24,6 +26,7 @@ import {
   extractExternalUrl,
   isExternalUrlValue,
 } from '../utils/statusStyles';
+import { buildStandaloneLeadFormHtml } from '../utils/standaloneFormHtml';
 import { submitPublicLeadForm } from '../services/firestoreWorkspace';
 import { CandidateAvatar } from './CandidateAvatar';
 import { ResumePreviewModal } from './ResumePreviewModal';
@@ -206,6 +209,39 @@ export function LeadFormView(props: LeadFormViewProps) {
   const [copiedLink, setCopiedLink] = useState(false);
   const [resumePreviewOpen, setResumePreviewOpen] = useState(false);
 
+  const [publishedOriginInput, setPublishedOriginInput] = useState<string>(() => {
+    try {
+      return localStorage.getItem('uxd-vault-published-origin-v1') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [linkSourceMode, setLinkSourceMode] = useState<'published' | 'preview' | 'shared'>(() => {
+    try {
+      const savedOrigin = localStorage.getItem('uxd-vault-published-origin-v1') || '';
+      if (savedOrigin.trim()) return 'published';
+    } catch {
+      // Ignore storage failures
+    }
+    if (typeof window !== 'undefined' && !window.location.hostname.startsWith('ais-dev-')) {
+      return 'shared';
+    }
+    return 'published';
+  });
+
+  const handlePublishedOriginChange = (val: string) => {
+    setPublishedOriginInput(val);
+    try {
+      if (val.trim()) {
+        localStorage.setItem('uxd-vault-published-origin-v1', val.trim());
+      } else {
+        localStorage.removeItem('uxd-vault-published-origin-v1');
+      }
+    } catch {
+      // Ignore storage failures
+    }
+  };
+
   const effectiveRelocationString = useMemo(() => {
     const parts = [...selectedRelocations];
     const custom = customRelocation.trim();
@@ -233,13 +269,36 @@ export function LeadFormView(props: LeadFormViewProps) {
     return inferPriorityFromLead(yearsOfExperience, designedAiProduct, noticePeriod);
   }, [manualPriority, yearsOfExperience, designedAiProduct, noticePeriod]);
 
-  const shareableUrl = useMemo(() => {
-    if (!isWorkspace || typeof window === 'undefined') return '';
+  const { publicShareUrl, isDevOrigin, publishedUrlValid } = useMemo(() => {
+    if (!isWorkspace || typeof window === 'undefined') {
+      return { publicShareUrl: '', isDevOrigin: false, publishedUrlValid: false };
+    }
+    const currentUrl = new URL(window.location.href);
+    const devHost = currentUrl.hostname.startsWith('ais-dev-');
+
+    if (linkSourceMode === 'published' && publishedOriginInput.trim()) {
+      const raw = publishedOriginInput.trim();
+      const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+      try {
+        const parsed = new URL(withScheme);
+        parsed.pathname = '/';
+        parsed.search = `?lead-form=${encodeURIComponent(props.userUid)}`;
+        parsed.hash = '';
+        return { publicShareUrl: parsed.toString(), isDevOrigin: devHost, publishedUrlValid: true };
+      } catch {
+        return { publicShareUrl: '', isDevOrigin: devHost, publishedUrlValid: false };
+      }
+    }
+
     const url = new URL(window.location.href);
+    if (linkSourceMode === 'shared' && devHost) {
+      url.hostname = url.hostname.replace(/^ais-dev-/, 'ais-pre-');
+    }
+    url.pathname = '/';
     url.search = `?lead-form=${encodeURIComponent(props.userUid)}`;
     url.hash = '';
-    return url.toString();
-  }, [isWorkspace, props]);
+    return { publicShareUrl: url.toString(), isDevOrigin: devHost, publishedUrlValid: true };
+  }, [isWorkspace, props, linkSourceMode, publishedOriginInput]);
 
   const resetFormFields = () => {
     setFullName('');
@@ -269,14 +328,28 @@ export function LeadFormView(props: LeadFormViewProps) {
   };
 
   const handleCopyShareLink = async () => {
-    if (!shareableUrl) return;
+    if (!publicShareUrl) return;
     try {
-      await navigator.clipboard.writeText(shareableUrl);
+      await navigator.clipboard.writeText(publicShareUrl);
       setCopiedLink(true);
       window.setTimeout(() => setCopiedLink(false), 2400);
     } catch {
       setCopiedLink(false);
     }
+  };
+
+  const handleDownloadStandaloneHtml = () => {
+    if (!isWorkspace) return;
+    const html = buildStandaloneLeadFormHtml(props.userUid);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'uxd-vault-lead-form.html';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleSubmit = async (e: React.FormEvent, goToTableAfter = false) => {
@@ -504,27 +577,117 @@ export function LeadFormView(props: LeadFormViewProps) {
                 : 'Collect every lead detail in one structured form or copy the shareable link so candidates can submit directly into New Submissions.'}
             </p>
           </div>
+        </div>
 
-          {isWorkspace && !previewingPublic && (
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
+        {/* Shareable Public Link Bar (Workspace Mode) */}
+        {isWorkspace && !previewingPublic && (
+          <section className="rounded-2xl border border-black/[0.08] dark:border-white/[0.10] bg-white dark:bg-[#1C1C1E] p-4 sm:p-5 space-y-3.5">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2 text-xs font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                <Link2 className="w-4 h-4 text-[#0071E3] dark:text-[#2997FF] shrink-0" />
+                <span>Public Lead Intake Link</span>
+              </div>
+
+              {isDevOrigin && (
+                <div
+                  role="tablist"
+                  aria-label="Share link target"
+                  className="inline-flex items-center p-0.5 rounded-lg bg-[#F5F5F7] dark:bg-[#2C2C2E] border border-black/[0.06] dark:border-white/[0.08] self-start lg:self-auto"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={linkSourceMode === 'published'}
+                    onClick={() => setLinkSourceMode('published')}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                      linkSourceMode === 'published'
+                        ? 'bg-white dark:bg-[#1C1C1E] text-[#1D1D1F] dark:text-[#F5F5F7] shadow-xs'
+                        : 'text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7]'
+                    }`}
+                  >
+                    Published URL
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={linkSourceMode === 'preview'}
+                    onClick={() => setLinkSourceMode('preview')}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                      linkSourceMode === 'preview'
+                        ? 'bg-white dark:bg-[#1C1C1E] text-[#1D1D1F] dark:text-[#F5F5F7] shadow-xs'
+                        : 'text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7]'
+                    }`}
+                  >
+                    Dev Test Link
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={linkSourceMode === 'shared'}
+                    onClick={() => setLinkSourceMode('shared')}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                      linkSourceMode === 'shared'
+                        ? 'bg-white dark:bg-[#1C1C1E] text-[#1D1D1F] dark:text-[#F5F5F7] shadow-xs'
+                        : 'text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7]'
+                    }`}
+                  >
+                    Shared App URL
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {isDevOrigin && linkSourceMode === 'published' && (
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                <label
+                  htmlFor="published-origin-input"
+                  className="text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6] whitespace-nowrap shrink-0"
+                >
+                  Published Base URL
+                </label>
+                <input
+                  id="published-origin-input"
+                  type="url"
+                  value={publishedOriginInput}
+                  onChange={(e) => handlePublishedOriginChange(e.target.value)}
+                  placeholder="Click Publish (top-right) and paste your https://...run.app URL here"
+                  className="flex-1 h-9 px-3 text-xs font-mono rounded-[10px] border border-black/[0.10] dark:border-white/[0.12] bg-[#F5F5F7] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-[#F5F5F7] placeholder:text-[#86868B] focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
+                />
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={
+                  publicShareUrl ||
+                  (linkSourceMode === 'published'
+                    ? 'Paste your Published URL above (or use Download Form HTML below)'
+                    : '')
+                }
+                onFocus={(e) => e.currentTarget.select()}
+                aria-label="Shareable public lead intake URL"
+                className="flex-1 h-10 px-3.5 text-xs font-mono rounded-[10px] border border-black/[0.10] dark:border-white/[0.12] bg-[#F5F5F7] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-[#F5F5F7] focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
+              />
               <button
                 type="button"
+                disabled={!publicShareUrl}
                 onClick={() => void handleCopyShareLink()}
-                className="h-9 px-3.5 rounded-[10px] border border-black/[0.10] dark:border-white/[0.14] bg-white dark:bg-[#1C1C1E] text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] hover:bg-[#F5F5F7] dark:hover:bg-[#2C2C2E] inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                className="h-10 px-4 rounded-[10px] bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] disabled:opacity-50 text-white text-xs font-medium inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
               >
                 {copiedLink ? (
                   <>
-                    <Check className="w-3.5 h-3.5 text-[#1E7F34] dark:text-[#30D158]" />
-                    <span>Shareable Link Copied</span>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Copied Link</span>
                   </>
                 ) : (
                   <>
-                    <Copy className="w-3.5 h-3.5 text-[#6E6E73] dark:text-[#A1A1A6]" />
-                    <span>Copy Shareable Form Link</span>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy Public Link</span>
                   </>
                 )}
               </button>
-
               <button
                 type="button"
                 onClick={() => {
@@ -532,14 +695,52 @@ export function LeadFormView(props: LeadFormViewProps) {
                   setPublicSubmittedName(null);
                   setPreviewingPublic(true);
                 }}
-                className="h-9 px-3.5 rounded-[10px] border border-black/[0.10] dark:border-white/[0.14] bg-white dark:bg-[#1C1C1E] text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] hover:bg-[#F5F5F7] dark:hover:bg-[#2C2C2E] inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                className="h-10 px-3.5 rounded-[10px] border border-black/[0.10] dark:border-white/[0.14] bg-white dark:bg-[#2C2C2E] text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] hover:bg-[#F5F5F7] dark:hover:bg-[#3A3A3C] inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
               >
                 <Eye className="w-3.5 h-3.5 text-[#6E6E73] dark:text-[#A1A1A6]" />
                 <span>Preview Public Form</span>
               </button>
+              <button
+                type="button"
+                onClick={handleDownloadStandaloneHtml}
+                className="h-10 px-3.5 rounded-[10px] border border-black/[0.10] dark:border-white/[0.14] bg-white dark:bg-[#2C2C2E] text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] hover:bg-[#F5F5F7] dark:hover:bg-[#3A3A3C] inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+              >
+                <Download className="w-3.5 h-3.5 text-[#6E6E73] dark:text-[#A1A1A6]" />
+                <span>Download Form (.html)</span>
+              </button>
             </div>
-          )}
-        </div>
+
+            {isDevOrigin ? (
+              <p className="text-[11px] leading-relaxed text-[#6E6E73] dark:text-[#A1A1A6]">
+                {linkSourceMode === 'published' && (
+                  <>
+                    {publishedUrlValid && publicShareUrl ? (
+                      'Anyone with this Published URL can submit the form without signing in — entries sync straight to New Submissions.'
+                    ) : (
+                      <>
+                        AI Studio&apos;s <span className="font-mono">ais-pre-...</span> preview is not a public web link until deployed. Either click <strong className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">Publish</strong> in the top-right bar and paste your live <span className="font-mono">*.run.app</span> URL above, or click <strong className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">Download Form (.html)</strong> to host a standalone public form on Netlify Drop, Vercel, GitHub Pages, or Firebase Hosting.
+                      </>
+                    )}
+                  </>
+                )}
+                {linkSourceMode === 'preview' && (
+                  <>
+                    This <span className="font-mono">ais-dev-...</span> test link opens the standalone form immediately in your signed-in browser session; for external candidates, use a <strong className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">Published URL</strong> or host the downloaded <span className="font-mono">.html</span> file.
+                  </>
+                )}
+                {linkSourceMode === 'shared' && (
+                  <>
+                    Note: <span className="font-mono">ais-pre-...</span> returns <strong className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">404 Page not found</strong> unless your workspace has an active shared runtime. Use <strong className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">Published URL</strong> or <strong className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">Download Form (.html)</strong> for a guaranteed public link.
+                  </>
+                )}
+              </p>
+            ) : (
+              <p className="text-[11px] text-[#6E6E73] dark:text-[#A1A1A6]">
+                Anyone with this link can submit their details without signing in — entries sync straight to <strong className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">New Submissions</strong>.
+              </p>
+            )}
+          </section>
+        )}
 
         {/* Workspace Save Confirmation Banner */}
         {isWorkspace && !previewingPublic && savedNotice && (

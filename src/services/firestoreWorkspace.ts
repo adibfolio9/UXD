@@ -839,7 +839,6 @@ export async function submitPublicLeadForm(
     `lead-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     'lead'
   );
-  const path = `users/${cleanTargetUid}/leadSubmissions/${submissionId}`;
 
   try {
     await setDoc(doc(db, 'users', cleanTargetUid, 'leadSubmissions', submissionId), {
@@ -860,7 +859,20 @@ export async function submitPublicLeadForm(
       createdAt: serverTimestamp(),
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, path);
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : '';
+    if (code === 'permission-denied') {
+      throw new Error(
+        'This form link is inactive or no longer accepting submissions. Please verify the link with the recruiter.'
+      );
+    }
+    throw new Error(
+      error instanceof Error
+        ? error.message
+        : 'Unable to submit your details right now. Please try again.'
+    );
   }
 }
 
@@ -911,21 +923,33 @@ export async function ingestLeadSubmissionsToCloud(
   submissionIds: string[],
   nextCodeNumber: number
 ): Promise<void> {
-  const batch = writeBatch(db);
-  for (const t of tasks) {
-    batch.set(doc(db, 'users', uid, 'candidates', t.id), toCandidatePayload(uid, t, false, true));
-  }
-  for (const subId of submissionIds) {
-    batch.delete(doc(db, 'users', uid, 'leadSubmissions', subId));
-  }
-  batch.update(doc(db, 'users', uid, 'workspaces', 'default'), {
-    nextCodeNumber,
-    updatedAt: serverTimestamp(),
-  });
-  try {
-    await batch.commit();
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `users/${uid}/leadSubmissions`);
+  const chunkSize = 150;
+  for (let i = 0; i < tasks.length; i += chunkSize) {
+    const taskChunk = tasks.slice(i, i + chunkSize);
+    const idChunk = submissionIds.slice(i, i + chunkSize);
+    const isLastChunk = i + chunkSize >= tasks.length;
+
+    const batch = writeBatch(db);
+    for (const t of taskChunk) {
+      batch.set(
+        doc(db, 'users', uid, 'candidates', t.id),
+        toCandidatePayload(uid, t, false, true)
+      );
+    }
+    for (const subId of idChunk) {
+      batch.delete(doc(db, 'users', uid, 'leadSubmissions', subId));
+    }
+    if (isLastChunk) {
+      batch.update(doc(db, 'users', uid, 'workspaces', 'default'), {
+        nextCodeNumber,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `users/${uid}/leadSubmissions`);
+    }
   }
 }
 
