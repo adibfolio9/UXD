@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
-import { FileSpreadsheet, Layers, X } from 'lucide-react';
+import { FileSpreadsheet, X } from 'lucide-react';
 import { AnalyticsView } from './components/AnalyticsView';
 import { BoardView } from './components/BoardView';
+import { DashboardView } from './components/DashboardView';
 import { ImportExcelView } from './components/ImportExcelView';
 import { ImportSheetModal } from './components/ImportSheetModal';
 import { ItemDrawer } from './components/ItemDrawer';
@@ -65,7 +66,7 @@ export default function App() {
 
   const cloudCandidateIdsRef = useRef<Set<string>>(new Set());
 
-  const [activeView, setActiveView] = useState<ViewMode>('list');
+  const [activeView, setActiveView] = useState<ViewMode>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<string | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [priorityFilter, setPriorityFilter] = useState<PriorityLevel | 'all'>('all');
@@ -213,9 +214,12 @@ export default function App() {
     return (
       <div className="min-h-screen bg-[#F5F5F7] dark:bg-black flex items-center justify-center p-6">
         <div className="flex items-center gap-3 text-sm font-medium text-[#6E6E73] dark:text-[#A1A1A6]">
-          <span className="w-7 h-7 rounded-lg bg-[#1D1D1F] dark:bg-[#0A84FF] text-white flex items-center justify-center">
-            <Layers className="w-4 h-4 animate-pulse" aria-hidden="true" />
-          </span>
+          <img
+            src="/assets/aistudio/image_9e6b3606.png"
+            alt="UXD Vault official logo"
+            referrerPolicy="no-referrer"
+            className="w-8 h-8 rounded-lg object-cover bg-black animate-pulse shadow-[0_1px_2px_rgba(0,0,0,0.18)]"
+          />
           <span>Checking session...</span>
         </div>
       </div>
@@ -868,6 +872,24 @@ export default function App() {
             </div>
           ) : (
             <>
+              {activeView === 'dashboard' && (
+                <DashboardView
+                  statuses={workspace.statuses}
+                  tasks={filteredTasks}
+                  projects={workspace.projects}
+                  onMoveTask={(taskId, statusId) => handleMoveTask(taskId, statusId)}
+                  onSelectTask={setSelectedTaskId}
+                  onNavigateView={setActiveView}
+                  onExportExcel={() =>
+                    exportTasksToExcel({
+                      tasks: filteredTasks,
+                      statuses: workspace.statuses,
+                      projects: workspace.projects,
+                    })
+                  }
+                />
+              )}
+
               {activeView === 'board' && (
                 <BoardView
                   statuses={workspace.statuses}

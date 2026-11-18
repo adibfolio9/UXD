@@ -14,7 +14,6 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
-  Layers,
   Lock,
   LogOut,
   Mail,
@@ -156,11 +155,14 @@ export function LoginScreen({
       {/* Top Bar */}
       <div className="flex items-center justify-between max-w-5xl w-full mx-auto">
         <div className="flex items-center gap-2.5">
-          <span className="w-8 h-8 rounded-lg bg-[#1D1D1F] dark:bg-[#0A84FF] text-white flex items-center justify-center shadow-[0_1px_2px_rgba(0,0,0,0.12)]">
-            <Layers className="w-4 h-4" aria-hidden="true" />
-          </span>
+          <img
+            src="/assets/aistudio/image_9e6b3606.png"
+            alt="UXD Vault official logo"
+            referrerPolicy="no-referrer"
+            className="w-9 h-9 rounded-lg object-cover bg-black shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.18)]"
+          />
           <span className="font-display font-semibold text-base tracking-[-0.02em]">
-            Strata
+            UXD Vault
           </span>
         </div>
 
@@ -256,10 +258,16 @@ export function LoginScreen({
             </div>
           ) : (
             <>
-              <div className="space-y-1.5 text-center">
+              <div className="space-y-2 text-center">
+                <img
+                  src="/assets/aistudio/image_9e6b3606.png"
+                  alt="UXD Vault official logo"
+                  referrerPolicy="no-referrer"
+                  className="w-14 h-14 rounded-2xl object-cover bg-black mx-auto mb-3 shadow-[0_4px_14px_rgba(0,0,0,0.18)]"
+                />
                 <h1 className="text-[22px] font-display font-bold tracking-[-0.02em]">
                   {mode === 'signin'
-                    ? 'Sign in to Strata'
+                    ? 'Sign in to UXD Vault'
                     : mode === 'signup'
                       ? 'Create Workspace Account'
                       : 'Reset Password'}

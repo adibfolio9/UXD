@@ -1,4 +1,4 @@
-export type ViewMode = 'list' | 'board' | 'pipeline' | 'analytics' | 'import';
+export type ViewMode = 'dashboard' | 'list' | 'board' | 'pipeline' | 'analytics' | 'import';
 
 export type StatusCategory = 'backlog' | 'active' | 'review' | 'blocked' | 'done';
 

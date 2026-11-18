@@ -27,6 +27,7 @@ import {
   sanitizeExternalUrl,
 } from '../utils/statusStyles';
 import { Avatar } from './Avatar';
+import { CandidateAvatar } from './CandidateAvatar';
 import { StatusIcon } from './StatusIcon';
 
 interface BoardViewProps {
@@ -387,11 +388,16 @@ export function BoardView({
                           </div>
 
                           {/* Candidate Full Name & Role */}
-                          <h3 className="text-[14px] font-semibold tracking-[-0.01em] text-[#1D1D1F] dark:text-[#F5F5F7] leading-snug">
-                            {task.fullName}
-                          </h3>
-                          <div className="text-xs text-[#86868B] truncate mb-2">
-                            {project?.name ?? 'Candidate'}
+                          <div className="flex items-center gap-2.5 mb-2">
+                            <CandidateAvatar name={task.fullName} size="md" />
+                            <div className="min-w-0">
+                              <h3 className="text-[14px] font-semibold tracking-[-0.01em] text-[#1D1D1F] dark:text-[#F5F5F7] leading-snug truncate">
+                                {task.fullName || 'Unnamed Candidate'}
+                              </h3>
+                              <div className="text-xs text-[#86868B] truncate">
+                                {project?.name ?? 'Candidate'}
+                              </div>
+                            </div>
                           </div>
 
                           {/* AI Experience + Notice */}

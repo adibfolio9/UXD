@@ -3,7 +3,7 @@ import {
   BarChart3,
   FileSpreadsheet,
   FolderKanban,
-  Layers,
+  LayoutDashboard,
   ListTodo,
   LogOut,
   Moon,
@@ -35,6 +35,7 @@ interface SidebarProps {
 }
 
 const NAV_ITEMS: { id: ViewMode; label: string; icon: typeof FolderKanban }[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'list', label: 'List / Table', icon: ListTodo },
   { id: 'board', label: 'Kanban Board', icon: FolderKanban },
   { id: 'pipeline', label: 'Status Pipeline', icon: SlidersHorizontal },
@@ -87,11 +88,14 @@ export function Sidebar({
       {/* Brand Header */}
       <div className="h-14 px-5 flex items-center justify-between border-b border-black/[0.06] dark:border-white/[0.08] shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
-          <span className="w-7 h-7 rounded-lg bg-[#1D1D1F] dark:bg-[#0A84FF] text-white flex items-center justify-center shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.12)]">
-            <Layers className="w-4 h-4" aria-hidden="true" />
-          </span>
+          <img
+            src="/assets/aistudio/image_9e6b3606.png"
+            alt="UXD Vault official logo"
+            referrerPolicy="no-referrer"
+            className="w-8 h-8 rounded-lg object-cover bg-black shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.18)]"
+          />
           <span className="font-display font-semibold text-[15px] tracking-[-0.02em] text-[#1D1D1F] dark:text-[#F5F5F7] truncate">
-            Strata
+            UXD Vault
           </span>
         </div>
         <button

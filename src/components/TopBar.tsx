@@ -13,6 +13,7 @@ interface TopBarProps {
 }
 
 const VIEW_TITLES: Record<ViewMode, string> = {
+  dashboard: 'Dashboard',
   board: 'Kanban Board',
   list: 'List / Table',
   pipeline: 'Status Pipeline',

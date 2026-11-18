@@ -14,6 +14,7 @@ import {
   sanitizeExternalUrl,
 } from '../utils/statusStyles';
 import { Avatar } from './Avatar';
+import { CandidateAvatar } from './CandidateAvatar';
 import { StatusIcon } from './StatusIcon';
 
 interface ItemDrawerProps {
@@ -140,20 +141,23 @@ export function ItemDrawer({
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
           {/* Full Name */}
-          <div className="space-y-1">
-            <label
-              htmlFor="drawer-fullname"
-              className="block text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6]"
-            >
-              Full name
-            </label>
-            <input
-              id="drawer-fullname"
-              type="text"
-              value={task.fullName}
-              onChange={(e) => onUpdateTask(task.id, { fullName: e.target.value })}
-              className="w-full text-xl font-display font-semibold tracking-[-0.02em] text-[#1D1D1F] dark:text-[#F5F5F7] bg-transparent border border-transparent hover:border-black/[0.10] dark:hover:border-white/[0.12] focus:border-[#0071E3] rounded-xl px-2.5 py-1.5 -mx-2.5 focus:outline-none transition-colors"
-            />
+          <div className="flex items-center gap-3.5">
+            <CandidateAvatar name={task.fullName} size="lg" />
+            <div className="flex-1 min-w-0 space-y-1">
+              <label
+                htmlFor="drawer-fullname"
+                className="block text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6]"
+              >
+                Full name
+              </label>
+              <input
+                id="drawer-fullname"
+                type="text"
+                value={task.fullName}
+                onChange={(e) => onUpdateTask(task.id, { fullName: e.target.value })}
+                className="w-full text-xl font-display font-semibold tracking-[-0.02em] text-[#1D1D1F] dark:text-[#F5F5F7] bg-transparent border border-transparent hover:border-black/[0.10] dark:hover:border-white/[0.12] focus:border-[#0071E3] rounded-xl px-2.5 py-1.5 -mx-2.5 focus:outline-none transition-colors"
+              />
+            </div>
           </div>
 
           {/* Arrange Status Quick Selector */}
