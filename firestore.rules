@@ -1,0 +1,239 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidUserPrivateProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'photoUrl', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'photoUrl', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.displayName is string && data.displayName.size() <= 120
+        && data.photoUrl is string && data.photoUrl.size() <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceConfig(data, userId) {
+      return data.keys().hasAll(['ownerUid', 'workspaceName', 'nextCodeNumber', 'seedReplaced', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerUid', 'workspaceName', 'nextCodeNumber', 'seedReplaced', 'createdAt', 'updatedAt'])
+        && isValidId(data.ownerUid)
+        && data.ownerUid == userId
+        && data.ownerUid == request.auth.uid
+        && data.workspaceName is string && data.workspaceName.size() >= 1 && data.workspaceName.size() <= 100
+        && data.nextCodeNumber is int && data.nextCodeNumber >= 1 && data.nextCodeNumber <= 10000000
+        && data.seedReplaced is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStatusItem(data, userId, statusId) {
+      return data.keys().hasAll(['ownerUid', 'id', 'name', 'category', 'color', 'wipLimit', 'description', 'order', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerUid', 'id', 'name', 'category', 'color', 'wipLimit', 'description', 'order', 'createdAt', 'updatedAt'])
+        && isValidId(data.ownerUid)
+        && data.ownerUid == userId
+        && data.ownerUid == request.auth.uid
+        && isValidId(data.id)
+        && data.id == statusId
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.category in ['backlog', 'active', 'review', 'blocked', 'done']
+        && data.color in ['slate', 'blue', 'amber', 'violet', 'rose', 'emerald']
+        && (data.wipLimit == null || (data.wipLimit is int && data.wipLimit >= 1 && data.wipLimit <= 10000))
+        && data.description is string && data.description.size() <= 300
+        && data.order is int && data.order >= 0 && data.order <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProjectItem(data, userId, projectId) {
+      return data.keys().hasAll(['ownerUid', 'id', 'key', 'name', 'summary', 'leadId', 'targetDate', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerUid', 'id', 'key', 'name', 'summary', 'leadId', 'targetDate', 'createdAt', 'updatedAt'])
+        && isValidId(data.ownerUid)
+        && data.ownerUid == userId
+        && data.ownerUid == request.auth.uid
+        && isValidId(data.id)
+        && data.id == projectId
+        && data.key is string && data.key.size() >= 1 && data.key.size() <= 10
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.summary is string && data.summary.size() <= 400
+        && data.leadId is string && data.leadId.size() >= 1 && data.leadId.size() <= 128
+        && data.targetDate is string && data.targetDate.size() <= 40
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCandidateRecord(data, userId, candidateId) {
+      return data.keys().hasAll([
+          'ownerUid', 'id', 'code', 'projectId', 'statusId', 'order', 'priority',
+          'assigneeId', 'deleted', 'timestamp', 'fullName', 'email', 'contactNo',
+          'portfolioUrl', 'currentLocation', 'yearsOfExperience', 'designedAiProduct',
+          'noticePeriod', 'resumeUrl', 'message', 'expectedSalary', 'readyToRelocateIn',
+          'statusHistory', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid', 'id', 'code', 'projectId', 'statusId', 'order', 'priority',
+          'assigneeId', 'deleted', 'timestamp', 'fullName', 'email', 'contactNo',
+          'portfolioUrl', 'currentLocation', 'yearsOfExperience', 'designedAiProduct',
+          'noticePeriod', 'resumeUrl', 'message', 'expectedSalary', 'readyToRelocateIn',
+          'statusHistory', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerUid)
+        && data.ownerUid == userId
+        && data.ownerUid == request.auth.uid
+        && isValidId(data.id)
+        && data.id == candidateId
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 32
+        && isValidId(data.projectId)
+        && isValidId(data.statusId)
+        && data.order is int && data.order >= 0 && data.order <= 100000
+        && data.priority in ['urgent', 'high', 'medium', 'low']
+        && data.assigneeId is string && data.assigneeId.size() >= 1 && data.assigneeId.size() <= 128
+        && data.deleted is bool
+        && data.timestamp is string && data.timestamp.size() <= 64
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 200
+        && data.email is string && data.email.size() <= 254
+        && data.contactNo is string && data.contactNo.size() <= 120
+        && data.portfolioUrl is string && data.portfolioUrl.size() <= 2000
+        && data.currentLocation is string && data.currentLocation.size() <= 160
+        && data.yearsOfExperience is string && data.yearsOfExperience.size() <= 80
+        && data.designedAiProduct is string && data.designedAiProduct.size() <= 500
+        && data.noticePeriod is string && data.noticePeriod.size() <= 120
+        && data.resumeUrl is string && data.resumeUrl.size() <= 2000
+        && data.message is string && data.message.size() <= 4000
+        && data.expectedSalary is string && data.expectedSalary.size() <= 160
+        && data.readyToRelocateIn is string && data.readyToRelocateIn.size() <= 240
+        && data.statusHistory is list && data.statusHistory.size() <= 20
+        && (data.statusHistory.size() == 0 || data.statusHistory[0] is map)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId}/private/{docId} {
+      allow get: if isVerifiedUser() && isOwner(userId) && isValidId(docId) && docId == 'profile';
+      allow list: if false;
+      allow create: if isVerifiedUser() && isOwner(userId) && isValidId(docId) && docId == 'profile'
+        && isValidUserPrivateProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isOwner(userId) && isValidId(docId) && docId == 'profile'
+        && isValidUserPrivateProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'photoUrl', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /users/{userId}/workspaces/{workspaceId} {
+      allow get: if isVerifiedUser() && isOwner(userId) && isValidId(workspaceId) && workspaceId == 'default';
+      allow list: if false;
+      allow create: if isVerifiedUser() && isOwner(userId) && isValidId(workspaceId) && workspaceId == 'default'
+        && isValidWorkspaceConfig(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isOwner(userId) && isValidId(workspaceId) && workspaceId == 'default'
+        && isValidWorkspaceConfig(incoming(), userId)
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['workspaceName', 'nextCodeNumber', 'seedReplaced', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(workspaceId) && workspaceId == 'default';
+    }
+
+    match /users/{userId}/statuses/{statusId} {
+      allow get: if isVerifiedUser() && isOwner(userId) && isValidId(statusId);
+      allow list: if isVerifiedUser() && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+      allow create: if isVerifiedUser() && isOwner(userId) && isValidId(statusId)
+        && isValidStatusItem(incoming(), userId, statusId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isOwner(userId) && isValidId(statusId)
+        && isValidStatusItem(incoming(), userId, statusId)
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'color', 'wipLimit', 'description', 'order', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(statusId);
+    }
+
+    match /users/{userId}/projects/{projectId} {
+      allow get: if isVerifiedUser() && isOwner(userId) && isValidId(projectId);
+      allow list: if isVerifiedUser() && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+      allow create: if isVerifiedUser() && isOwner(userId) && isValidId(projectId)
+        && isValidProjectItem(incoming(), userId, projectId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isOwner(userId) && isValidId(projectId)
+        && isValidProjectItem(incoming(), userId, projectId)
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['key', 'name', 'summary', 'leadId', 'targetDate', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(projectId);
+    }
+
+    match /users/{userId}/candidates/{candidateId} {
+      allow get: if isVerifiedUser() && isOwner(userId) && isValidId(candidateId);
+      allow list: if isVerifiedUser() && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+      allow create: if isVerifiedUser() && isOwner(userId) && isValidId(candidateId)
+        && isValidCandidateRecord(incoming(), userId, candidateId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/users/$(userId)/statuses/$(incoming().statusId))
+        && existsAfter(/databases/$(database)/documents/users/$(userId)/projects/$(incoming().projectId));
+      allow update: if isVerifiedUser() && isOwner(userId) && isValidId(candidateId)
+        && isValidCandidateRecord(incoming(), userId, candidateId)
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/users/$(userId)/statuses/$(incoming().statusId))
+        && existsAfter(/databases/$(database)/documents/users/$(userId)/projects/$(incoming().projectId))
+        && (
+          // Action: Status / Order Transition
+          incoming().diff(existing()).affectedKeys().hasOnly(['statusId', 'order', 'statusHistory', 'updatedAt'])
+          // Action: Full Candidate Details Edit
+          || incoming().diff(existing()).affectedKeys().hasOnly([
+            'projectId', 'statusId', 'order', 'priority', 'assigneeId', 'deleted',
+            'timestamp', 'fullName', 'email', 'contactNo', 'portfolioUrl',
+            'currentLocation', 'yearsOfExperience', 'designedAiProduct',
+            'noticePeriod', 'resumeUrl', 'message', 'expectedSalary',
+            'readyToRelocateIn', 'statusHistory', 'updatedAt'
+          ])
+        );
+      allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(candidateId);
+    }
+  }
+}

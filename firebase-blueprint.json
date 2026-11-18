@@ -1,0 +1,384 @@
+{
+  "entities": {
+    "UserPrivateProfile": {
+      "title": "UserPrivateProfile",
+      "description": "Private authenticated user credential metadata isolated under users/{userId}/private.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "photoUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "displayName", "photoUrl", "createdAt", "updatedAt"]
+    },
+    "WorkspaceConfig": {
+      "title": "WorkspaceConfig",
+      "description": "User workspace configuration and sequence counter.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "workspaceName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "nextCodeNumber": {
+          "type": "integer"
+        },
+        "seedReplaced": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "workspaceName",
+        "nextCodeNumber",
+        "seedReplaced",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StatusItem": {
+      "title": "StatusItem",
+      "description": "Workflow status column definition arranged by the user.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "category": {
+          "type": "string",
+          "enum": ["backlog", "active", "review", "blocked", "done"]
+        },
+        "color": {
+          "type": "string",
+          "enum": ["slate", "blue", "amber", "violet", "rose", "emerald"]
+        },
+        "wipLimit": {
+          "type": "integer"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "order": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "id",
+        "name",
+        "category",
+        "color",
+        "wipLimit",
+        "description",
+        "order",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ProjectItem": {
+      "title": "ProjectItem",
+      "description": "Role or track grouping candidates.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 400
+        },
+        "leadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "targetDate": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "id",
+        "key",
+        "name",
+        "summary",
+        "leadId",
+        "targetDate",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CandidateRecord": {
+      "title": "CandidateRecord",
+      "description": "Candidate or imported form response row stored privately under user ownership.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "statusId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "order": {
+          "type": "integer"
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["urgent", "high", "medium", "low"]
+        },
+        "assigneeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "timestamp": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "email": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 254
+        },
+        "contactNo": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "portfolioUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "currentLocation": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "yearsOfExperience": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80
+        },
+        "designedAiProduct": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "noticePeriod": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "resumeUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "message": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4000
+        },
+        "expectedSalary": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "readyToRelocateIn": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 240
+        },
+        "statusHistory": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "id",
+        "code",
+        "projectId",
+        "statusId",
+        "order",
+        "priority",
+        "assigneeId",
+        "deleted",
+        "timestamp",
+        "fullName",
+        "email",
+        "contactNo",
+        "portfolioUrl",
+        "currentLocation",
+        "yearsOfExperience",
+        "designedAiProduct",
+        "noticePeriod",
+        "resumeUrl",
+        "message",
+        "expectedSalary",
+        "readyToRelocateIn",
+        "statusHistory",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateProfile" },
+      "description": "Authenticated user's private profile PII."
+    },
+    "/users/{userId}/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/WorkspaceConfig" },
+      "description": "User workspace configuration and code counter."
+    },
+    "/users/{userId}/statuses/{statusId}": {
+      "schema": { "$ref": "#/entities/StatusItem" },
+      "description": "User-arranged workflow status columns."
+    },
+    "/users/{userId}/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/ProjectItem" },
+      "description": "Role / track definitions."
+    },
+    "/users/{userId}/candidates/{candidateId}": {
+      "schema": { "$ref": "#/entities/CandidateRecord" },
+      "description": "Candidate records and Excel-imported rows."
+    }
+  }
+}

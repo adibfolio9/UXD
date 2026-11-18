@@ -5,6 +5,7 @@ import {
   FolderKanban,
   Layers,
   ListTodo,
+  LogOut,
   Moon,
   Plus,
   RotateCcw,
@@ -26,6 +27,9 @@ interface SidebarProps {
   onResetWorkspace: () => void;
   isDark: boolean;
   onToggleTheme: () => void;
+  userDisplayName: string;
+  userEmail: string;
+  onSignOut: () => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
 }
@@ -50,6 +54,9 @@ export function Sidebar({
   onResetWorkspace,
   isDark,
   onToggleTheme,
+  userDisplayName,
+  userEmail,
+  onSignOut,
   mobileOpen,
   onCloseMobile,
 }: SidebarProps) {
@@ -283,6 +290,31 @@ export function Sidebar({
             <span>Reset Sheet Data</span>
           </button>
         )}
+        {/* Account Info + Sign Out */}
+        <div className="pt-2 mt-1 border-t border-black/[0.06] dark:border-white/[0.08] flex items-center justify-between gap-2 px-2 py-1.5">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="w-7 h-7 rounded-full bg-[#0071E3]/12 dark:bg-[#0A84FF]/20 text-[#0071E3] dark:text-[#2997FF] text-[11px] font-semibold flex items-center justify-center shrink-0">
+              {(userDisplayName || userEmail || 'U').slice(0, 2).toUpperCase()}
+            </span>
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] truncate">
+                {userDisplayName || 'Signed In'}
+              </div>
+              <div className="text-[11px] text-[#86868B] truncate">
+                {userEmail}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onSignOut}
+            title="Sign out"
+            aria-label="Sign out"
+            className="p-2 rounded-lg text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#D70015] dark:hover:text-[#FF453A] hover:bg-[#FF3B30]/10 transition-colors shrink-0"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   );
