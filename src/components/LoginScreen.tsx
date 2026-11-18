@@ -12,6 +12,8 @@ import {
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   Eye,
   EyeOff,
@@ -29,7 +31,7 @@ interface LoginScreenProps {
   unverifiedUser: User | null;
   isDark: boolean;
   onToggleTheme: () => void;
-  onRefreshVerification: () => Promise<void>;
+  onRefreshVerification: () => Promise<boolean>;
 }
 
 type AuthMode = 'signin' | 'signup' | 'reset';
@@ -41,8 +43,7 @@ function mapAuthError(code: string): {
   switch (code) {
     case 'auth/operation-not-allowed':
       return {
-        message:
-          'Email/Password sign-in is not yet enabled in your Firebase Console. Enable it in Authentication → Sign-in method, or sign in immediately with Google above.',
+        message: `Email/Password sign-in is still disabled on Firebase project "${FIREBASE_PROJECT_ID}".`,
         needsProviderConsoleSetup: true,
       };
     case 'auth/invalid-credential':
@@ -63,11 +64,15 @@ function mapAuthError(code: string): {
       return { message: 'Popup was blocked by your browser. Please allow popups for this site and try again.' };
     case 'auth/unauthorized-domain':
       return {
-        message: 'This domain is not authorized for Firebase Auth. Add it under Authentication → Settings → Authorized domains in Firebase Console.',
+        message: `This domain is not authorized for Firebase project "${FIREBASE_PROJECT_ID}". Add it under Authentication → Settings → Authorized domains.`,
         needsProviderConsoleSetup: true,
       };
     default:
-      return { message: 'Authentication failed. Please verify your credentials and try again.' };
+      return {
+        message: code
+          ? `Authentication failed (${code}). Please verify your credentials or sign in with Google above.`
+          : 'Authentication failed. Please verify your credentials and try again.',
+      };
   }
 }
 
@@ -78,6 +83,7 @@ export function LoginScreen({
   onRefreshVerification,
 }: LoginScreenProps) {
   const [mode, setMode] = useState<AuthMode>('signin');
+  const [showEmailForm, setShowEmailForm] = useState(false);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -231,8 +237,14 @@ export function LoginScreen({
                   onClick={async () => {
                     setSubmitting(true);
                     setErrorMsg(null);
+                    setInfoMsg(null);
                     try {
-                      await onRefreshVerification();
+                      const verified = await onRefreshVerification();
+                      if (!verified) {
+                        setErrorMsg(
+                          'Your email is not verified yet. Please open the verification link sent to your inbox, then try again.'
+                        );
+                      }
                     } finally {
                       setSubmitting(false);
                     }
@@ -316,17 +328,20 @@ export function LoginScreen({
                 </p>
               </div>
 
-              <div className="space-y-1">
-                <div className="relative flex items-center py-0.5">
-                  <div className="flex-1 border-t border-black/[0.08] dark:border-white/[0.10]" />
-                  <span className="px-3 text-[11px] font-medium text-[#86868B]">
-                    or use email &amp; password
-                  </span>
-                  <div className="flex-1 border-t border-black/[0.08] dark:border-white/[0.10]" />
-                </div>
-                <p className="text-[11px] text-center text-[#86868B]">
-                  Requires Email/Password enabled in Firebase Console
-                </p>
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowEmailForm((prev) => !prev)}
+                  className="w-full h-9 px-3 rounded-[10px] border border-black/[0.08] dark:border-white/[0.10] bg-[#F5F5F7]/70 dark:bg-[#2C2C2E]/60 hover:bg-[#E8E8ED] dark:hover:bg-[#3A3A3C] text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] inline-flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                  <span>Use Email &amp; Password</span>
+                  {showEmailForm ? (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )}
+                </button>
               </div>
 
               {errorMsg && (
@@ -337,17 +352,23 @@ export function LoginScreen({
                   </div>
                   {showConsoleGuide && (
                     <div className="pl-6 space-y-1.5 text-[11px] text-[#1D1D1F] dark:text-[#E5E5EA]">
-                      <p>1. Open Firebase Authentication Providers:</p>
+                      <p>
+                        Make sure you select project{' '}
+                        <span className="font-mono font-semibold">{FIREBASE_PROJECT_ID}</span> in Firebase Console:
+                      </p>
                       <a
                         href={firebaseProvidersUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1 font-medium text-[#0071E3] dark:text-[#2997FF] hover:underline"
                       >
-                        <span>Open Firebase Console</span>
+                        <span>Open Firebase Console ({FIREBASE_PROJECT_ID})</span>
                         <ExternalLink className="w-3 h-3" />
                       </a>
-                      <p>2. Select Email/Password → toggle Enable → Save.</p>
+                      <p>
+                        Authentication → Sign-in method → Email/Password → toggle Enable → Save. Or click{' '}
+                        <span className="font-semibold">Continue with Google</span> above to sign in immediately.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -360,7 +381,9 @@ export function LoginScreen({
                 </div>
               )}
 
-              <form onSubmit={(e) => void handleEmailSubmit(e)} className="space-y-3.5">
+              {showEmailForm && (
+                <>
+                  <form onSubmit={(e) => void handleEmailSubmit(e)} className="space-y-3.5 pt-1">
                 {mode === 'signup' && (
                   <div className="space-y-1.5">
                     <label
@@ -505,6 +528,8 @@ export function LoginScreen({
                   </>
                 )}
               </div>
+                </>
+              )}
             </>
           )}
         </div>

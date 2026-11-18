@@ -200,12 +200,13 @@ export default function App() {
     throw fatalSyncError;
   }
 
-  const handleRefreshVerification = async () => {
-    if (!auth.currentUser) return;
+  const handleRefreshVerification = async (): Promise<boolean> => {
+    if (!auth.currentUser) return false;
     await auth.currentUser.reload();
     await auth.currentUser.getIdToken(true);
     setCurrentUser(auth.currentUser);
     setVerificationTick((n) => n + 1);
+    return Boolean(auth.currentUser.emailVerified);
   };
 
   if (!authReady) {
