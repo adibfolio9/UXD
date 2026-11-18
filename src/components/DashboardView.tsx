@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   ArrowUpRight,
+  ClipboardList,
   Download,
   ExternalLink,
   FileText,
@@ -377,6 +378,15 @@ export function DashboardView({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => onNavigateView('form')}
+              className="h-9 px-3.5 rounded-[10px] bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] text-xs font-medium text-white inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            >
+              <ClipboardList className="w-3.5 h-3.5" />
+              <span>Lead Form</span>
+            </button>
+
             <button
               type="button"
               onClick={() => onNavigateView('list')}

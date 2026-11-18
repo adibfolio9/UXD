@@ -7,6 +7,11 @@ import { DashboardView } from './components/DashboardView';
 import { ImportExcelView } from './components/ImportExcelView';
 import { ImportSheetModal } from './components/ImportSheetModal';
 import { ItemDrawer } from './components/ItemDrawer';
+import {
+  LeadFormView,
+  inferPriorityFromLead,
+  inferTrackFromExperience,
+} from './components/LeadFormView';
 import { ListView } from './components/ListView';
 import { LoginScreen } from './components/LoginScreen';
 import { NewItemModal } from './components/NewItemModal';
@@ -17,7 +22,9 @@ import { TopBar } from './components/TopBar';
 import { INITIAL_WORKSPACE_STATE, TEAM_MEMBERS } from './data/seedData';
 import { auth } from './firebase';
 import {
+  PendingLeadSubmission,
   ensureUserAccountAndWorkspaceSeeded,
+  ingestLeadSubmissionsToCloud,
   resetWorkspaceInCloud,
   saveBulkMovesToCloud,
   saveImportToCloud,
@@ -31,6 +38,7 @@ import {
   saveTaskDeleteToCloud,
   saveTaskMoveToCloud,
   saveTaskUpdateToCloud,
+  subscribeToIncomingLeadSubmissions,
   subscribeToUserWorkspace,
 } from './services/firestoreWorkspace';
 import {
@@ -65,6 +73,18 @@ export default function App() {
   workspaceRef.current = workspace;
 
   const cloudCandidateIdsRef = useRef<Set<string>>(new Set());
+
+  const [publicLeadFormOwnerUid, setPublicLeadFormOwnerUid] = useState<string | null>(() => {
+    try {
+      const param = new URLSearchParams(window.location.search).get('lead-form');
+      return param && param.trim() ? param.trim() : null;
+    } catch {
+      return null;
+    }
+  });
+  const [pendingLeadQueue, setPendingLeadQueue] = useState<PendingLeadSubmission[]>([]);
+  const ingestingLeadsRef = useRef(false);
+  const processedSubmissionIdsRef = useRef<Set<string>>(new Set());
 
   const [activeView, setActiveView] = useState<ViewMode>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<string | 'all'>('all');
@@ -107,6 +127,7 @@ export default function App() {
       if (!user || !user.emailVerified) {
         setWorkspaceReady(false);
         cloudCandidateIdsRef.current = new Set();
+        setActiveView('dashboard');
       }
     });
     return () => unsubscribe();
@@ -119,6 +140,7 @@ export default function App() {
 
     let cancelled = false;
     let unsubscribeSnapshot: (() => void) | null = null;
+    let unsubscribeLeadInbox: (() => void) | null = null;
 
     const initCloud = async () => {
       try {
@@ -136,6 +158,16 @@ export default function App() {
             if (!cancelled) setFatalSyncError(err);
           }
         );
+        unsubscribeLeadInbox = subscribeToIncomingLeadSubmissions(
+          currentUser.uid,
+          (submissions) => {
+            if (cancelled) return;
+            setPendingLeadQueue(submissions);
+          },
+          (err) => {
+            if (!cancelled) setFatalSyncError(err);
+          }
+        );
       } catch (err) {
         if (!cancelled) {
           setFatalSyncError(err instanceof Error ? err : new Error(String(err)));
@@ -148,8 +180,102 @@ export default function App() {
     return () => {
       cancelled = true;
       if (unsubscribeSnapshot) unsubscribeSnapshot();
+      if (unsubscribeLeadInbox) unsubscribeLeadInbox();
     };
   }, [authReady, currentUser, verificationTick]);
+
+  // Automatically ingest incoming submissions from the shareable Lead Intake Form
+  useEffect(() => {
+    if (
+      !workspaceReady ||
+      !currentUser ||
+      !currentUser.emailVerified ||
+      pendingLeadQueue.length === 0 ||
+      ingestingLeadsRef.current
+    ) {
+      return;
+    }
+
+    const unqueued = pendingLeadQueue.filter(
+      (sub) => !processedSubmissionIdsRef.current.has(sub.id)
+    );
+    if (unqueued.length === 0) {
+      setPendingLeadQueue([]);
+      return;
+    }
+
+    ingestingLeadsRef.current = true;
+    unqueued.forEach((sub) => processedSubmissionIdsRef.current.add(sub.id));
+
+    const prev = workspaceRef.current;
+    const sortedStatuses = [...prev.statuses].sort((a, b) => a.order - b.order);
+    const defaultStatusId = sortedStatuses[0]?.id ?? 'status-applied';
+    const baseOrder = prev.tasks.filter((t) => t.statusId === defaultStatusId).length;
+    let nextCode = prev.nextCodeNumber;
+
+    const newTasks: TaskItem[] = unqueued.map((sub, idx) => {
+      const d = new Date(sub.createdAtIso || Date.now());
+      const nowFormatted = Number.isNaN(d.getTime())
+        ? new Date().toISOString().slice(0, 16).replace('T', ' ')
+        : `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()} ${String(
+            d.getHours()
+          ).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(
+            d.getSeconds()
+          ).padStart(2, '0')}`;
+
+      return {
+        id: `cand-form-${sub.id}`,
+        code: `CND-${nextCode++}`,
+        projectId: inferTrackFromExperience(sub.yearsOfExperience, prev.projects),
+        statusId: defaultStatusId,
+        order: baseOrder + idx,
+        priority: inferPriorityFromLead(
+          sub.yearsOfExperience,
+          sub.designedAiProduct,
+          sub.noticePeriod
+        ),
+        assigneeId: TEAM_MEMBERS[0]?.id ?? 'member-priya',
+        updatedAt: new Date().toISOString(),
+        statusHistory: [],
+        timestamp: nowFormatted,
+        fullName: sub.fullName,
+        email: sub.email,
+        contactNo: sub.contactNo,
+        portfolioUrl: sub.portfolioUrl,
+        currentLocation: sub.currentLocation,
+        yearsOfExperience: sub.yearsOfExperience,
+        designedAiProduct: sub.designedAiProduct,
+        noticePeriod: sub.noticePeriod,
+        resumeUrl: sub.resumeUrl,
+        message: sub.message,
+        expectedSalary: sub.expectedSalary,
+        readyToRelocateIn: sub.readyToRelocateIn,
+      };
+    });
+
+    const submissionIds = unqueued.map((s) => s.id);
+    setPendingLeadQueue([]);
+
+    void ingestLeadSubmissionsToCloud(
+      currentUser.uid,
+      newTasks,
+      submissionIds,
+      nextCode
+    )
+      .then(() => {
+        setImportBanner(
+          `Received ${newTasks.length} new ${
+            newTasks.length === 1 ? 'submission' : 'submissions'
+          } from your Lead Intake Form.`
+        );
+      })
+      .catch((err) => {
+        setFatalSyncError(err instanceof Error ? err : new Error(String(err)));
+      })
+      .finally(() => {
+        ingestingLeadsRef.current = false;
+      });
+  }, [workspaceReady, currentUser, pendingLeadQueue]);
 
   const filteredTasks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -209,6 +335,27 @@ export default function App() {
     setVerificationTick((n) => n + 1);
     return Boolean(auth.currentUser.emailVerified);
   };
+
+  if (publicLeadFormOwnerUid) {
+    return (
+      <LeadFormView
+        mode="public"
+        targetUid={publicLeadFormOwnerUid}
+        isDark={isDark}
+        onToggleTheme={() => setIsDark((prev) => !prev)}
+        onExitPublicMode={() => {
+          try {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('lead-form');
+            window.history.replaceState({}, '', url.toString());
+          } catch {
+            // Ignore URL history errors
+          }
+          setPublicLeadFormOwnerUid(null);
+        }}
+      />
+    );
+  }
 
   if (!authReady) {
     return (
@@ -682,6 +829,7 @@ export default function App() {
     setPriorityFilter('all');
     setAssigneeFilter('all');
     setSelectedTaskId(null);
+    setActiveView('dashboard');
     void resetWorkspaceInCloud(uid).catch(reportAsyncError);
   };
 
@@ -842,6 +990,7 @@ export default function App() {
           selectedProject={selectedProject}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          onNavigateDashboard={() => setActiveView('dashboard')}
           onOpenNewItem={() => setNewItemOpen(true)}
           onOpenImportSheet={() => {
             setDroppedWorkbook(null);
@@ -887,6 +1036,24 @@ export default function App() {
                       projects: workspace.projects,
                     })
                   }
+                />
+              )}
+
+              {activeView === 'form' && (
+                <LeadFormView
+                  mode="workspace"
+                  userUid={uid}
+                  statuses={workspace.statuses}
+                  projects={workspace.projects}
+                  members={TEAM_MEMBERS}
+                  nextCodeNumber={workspace.nextCodeNumber}
+                  defaultProjectId={
+                    selectedProjectId !== 'all'
+                      ? selectedProjectId
+                      : workspace.projects[0]?.id ?? 'proj-lead-staff'
+                  }
+                  onCreateLead={handleCreateTask}
+                  onNavigateView={setActiveView}
                 />
               )}
 
@@ -1003,6 +1170,7 @@ export default function App() {
             : workspace.projects[0]?.id ?? 'proj-lead-staff'
         }
         onClose={() => setNewItemOpen(false)}
+        onOpenFullForm={() => setActiveView('form')}
         onCreate={handleCreateTask}
       />
 

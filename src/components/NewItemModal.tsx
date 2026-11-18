@@ -15,6 +15,7 @@ interface NewItemModalProps {
   members: TeamMember[];
   defaultProjectId: string;
   onClose: () => void;
+  onOpenFullForm?: () => void;
   onCreate: (payload: {
     projectId: string;
     statusId: string;
@@ -44,6 +45,7 @@ export function NewItemModal({
   members,
   defaultProjectId,
   onClose,
+  onOpenFullForm,
   onCreate,
 }: NewItemModalProps) {
   const sortedStatuses = [...statuses].sort((a, b) => a.order - b.order);
@@ -444,20 +446,36 @@ export function NewItemModal({
             </div>
           </div>
 
-          <div className="pt-3 border-t border-black/[0.08] dark:border-white/[0.10] flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-10 px-4 rounded-[10px] text-sm font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:bg-black/[0.05] dark:hover:bg-white/[0.08] transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="h-10 px-5 rounded-[10px] bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] text-white text-sm font-medium transition-colors"
-            >
-              Add Row
-            </button>
+          <div className="pt-3 border-t border-black/[0.08] dark:border-white/[0.10] flex items-center justify-between gap-2">
+            {onOpenFullForm ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenFullForm();
+                }}
+                className="text-xs font-medium text-[#0071E3] dark:text-[#2997FF] hover:underline"
+              >
+                Open Full Lead Form
+              </button>
+            ) : (
+              <span />
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="h-10 px-4 rounded-[10px] text-sm font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:bg-black/[0.05] dark:hover:bg-white/[0.08] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="h-10 px-5 rounded-[10px] bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] text-white text-sm font-medium transition-colors"
+              >
+                Add Row
+              </button>
+            </div>
           </div>
         </form>
       </div>

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   BarChart3,
+  ClipboardList,
   FileSpreadsheet,
   FolderKanban,
   LayoutDashboard,
@@ -36,6 +37,7 @@ interface SidebarProps {
 
 const NAV_ITEMS: { id: ViewMode; label: string; icon: typeof FolderKanban }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'form', label: 'Lead Form', icon: ClipboardList },
   { id: 'list', label: 'List / Table', icon: ListTodo },
   { id: 'board', label: 'Kanban Board', icon: FolderKanban },
   { id: 'pipeline', label: 'Status Pipeline', icon: SlidersHorizontal },
@@ -87,7 +89,15 @@ export function Sidebar({
     <div className="flex flex-col h-full bg-[#FBFBFD]/95 dark:bg-[#161617]/95 backdrop-blur-xl border-r border-black/[0.08] dark:border-white/[0.10] select-none">
       {/* Brand Header */}
       <div className="h-14 px-5 flex items-center justify-between border-b border-black/[0.06] dark:border-white/[0.08] shrink-0">
-        <div className="flex items-center gap-2.5 min-w-0">
+        <button
+          type="button"
+          onClick={() => {
+            onSelectView('dashboard');
+            onCloseMobile();
+          }}
+          aria-label="Go to Dashboard"
+          className="flex items-center gap-2.5 min-w-0 text-left rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071E3] hover:opacity-85 transition-opacity"
+        >
           <img
             src="/assets/aistudio/image_9e6b3606.png"
             alt="UXD Vault official logo"
@@ -97,7 +107,7 @@ export function Sidebar({
           <span className="font-display font-semibold text-[15px] tracking-[-0.02em] text-[#1D1D1F] dark:text-[#F5F5F7] truncate">
             UXD Vault
           </span>
-        </div>
+        </button>
         <button
           type="button"
           onClick={onCloseMobile}

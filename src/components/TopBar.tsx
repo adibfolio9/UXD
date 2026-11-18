@@ -7,6 +7,7 @@ interface TopBarProps {
   selectedProject: Project | null;
   searchQuery: string;
   onSearchChange: (value: string) => void;
+  onNavigateDashboard: () => void;
   onOpenNewItem: () => void;
   onOpenImportSheet: () => void;
   onOpenMobileMenu: () => void;
@@ -14,6 +15,7 @@ interface TopBarProps {
 
 const VIEW_TITLES: Record<ViewMode, string> = {
   dashboard: 'Dashboard',
+  form: 'Lead Form',
   board: 'Kanban Board',
   list: 'List / Table',
   pipeline: 'Status Pipeline',
@@ -27,6 +29,7 @@ export function TopBar({
   selectedProject,
   searchQuery,
   onSearchChange,
+  onNavigateDashboard,
   onOpenNewItem,
   onOpenImportSheet,
   onOpenMobileMenu,
@@ -47,9 +50,13 @@ export function TopBar({
         </button>
 
         <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-[13px] min-w-0">
-          <span className="hidden sm:inline text-[#6E6E73] dark:text-[#A1A1A6] whitespace-nowrap shrink-0">
+          <button
+            type="button"
+            onClick={onNavigateDashboard}
+            className="hidden sm:inline text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] whitespace-nowrap shrink-0 transition-colors focus-visible:outline-none focus-visible:underline"
+          >
             {workspaceName}
-          </span>
+          </button>
           <span className="hidden sm:inline text-[#D2D2D7] dark:text-[#38383A]" aria-hidden="true">
             /
           </span>
@@ -67,7 +74,7 @@ export function TopBar({
 
       {/* Zone 2 + 3: Search & Primary Actions */}
       <div className="flex items-center gap-2.5 shrink-0">
-        {activeView !== 'pipeline' && activeView !== 'import' && (
+        {activeView !== 'pipeline' && activeView !== 'import' && activeView !== 'form' && (
           <div className="relative hidden md:block w-56 lg:w-64">
             <Search
               className="w-4 h-4 text-[#86868B] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"

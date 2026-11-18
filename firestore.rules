@@ -138,6 +138,36 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidPublicLeadSubmission(data, userId, submissionId) {
+      return data.keys().hasAll([
+          'targetUid', 'id', 'fullName', 'email', 'contactNo', 'portfolioUrl',
+          'currentLocation', 'yearsOfExperience', 'designedAiProduct', 'noticePeriod',
+          'resumeUrl', 'message', 'expectedSalary', 'readyToRelocateIn', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'targetUid', 'id', 'fullName', 'email', 'contactNo', 'portfolioUrl',
+          'currentLocation', 'yearsOfExperience', 'designedAiProduct', 'noticePeriod',
+          'resumeUrl', 'message', 'expectedSalary', 'readyToRelocateIn', 'createdAt'
+        ])
+        && isValidId(data.targetUid)
+        && data.targetUid == userId
+        && isValidId(data.id)
+        && data.id == submissionId
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 200
+        && data.email is string && data.email.size() <= 254
+        && data.contactNo is string && data.contactNo.size() <= 120
+        && data.portfolioUrl is string && data.portfolioUrl.size() <= 2000
+        && data.currentLocation is string && data.currentLocation.size() <= 160
+        && data.yearsOfExperience is string && data.yearsOfExperience.size() <= 80
+        && data.designedAiProduct is string && data.designedAiProduct.size() <= 500
+        && data.noticePeriod is string && data.noticePeriod.size() <= 120
+        && data.resumeUrl is string && data.resumeUrl.size() <= 2000
+        && data.message is string && data.message.size() <= 4000
+        && data.expectedSalary is string && data.expectedSalary.size() <= 160
+        && data.readyToRelocateIn is string && data.readyToRelocateIn.size() <= 240
+        && data.createdAt is timestamp;
+    }
+
     match /users/{userId}/private/{docId} {
       allow get: if isVerifiedUser() && isOwner(userId) && isValidId(docId) && docId == 'profile';
       allow list: if false;
@@ -234,6 +264,18 @@ service cloud.firestore {
           ])
         );
       allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(candidateId);
+    }
+
+    match /users/{userId}/leadSubmissions/{submissionId} {
+      allow get: if isVerifiedUser() && isOwner(userId) && isValidId(submissionId);
+      allow list: if isVerifiedUser() && isOwner(userId) && resource.data.targetUid == request.auth.uid;
+      allow create: if isValidId(userId)
+        && isValidId(submissionId)
+        && isValidPublicLeadSubmission(incoming(), userId, submissionId)
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/users/$(userId)/workspaces/default);
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(submissionId);
     }
   }
 }

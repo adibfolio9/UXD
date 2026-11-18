@@ -801,3 +801,131 @@ export async function resetWorkspaceInCloud(uid: string): Promise<void> {
     handleFirestoreError(error, OperationType.WRITE, `users/${uid}/workspaces/default`);
   }
 }
+
+export interface PublicLeadSubmissionInput {
+  fullName: string;
+  email: string;
+  contactNo: string;
+  portfolioUrl: string;
+  currentLocation: string;
+  yearsOfExperience: string;
+  designedAiProduct: string;
+  noticePeriod: string;
+  resumeUrl: string;
+  message: string;
+  expectedSalary: string;
+  readyToRelocateIn: string;
+}
+
+export interface PendingLeadSubmission extends PublicLeadSubmissionInput {
+  id: string;
+  createdAtIso: string;
+}
+
+export async function submitPublicLeadForm(
+  targetUid: string,
+  input: PublicLeadSubmissionInput
+): Promise<void> {
+  const cleanTargetUid = targetUid.trim();
+  if (!cleanTargetUid || !VALID_ID_RE.test(cleanTargetUid)) {
+    throw new Error('Invalid form workspace link.');
+  }
+  const safeName = clamp(input.fullName.trim(), LIMITS.fullName);
+  if (!safeName) {
+    throw new Error('Full Name is required.');
+  }
+
+  const submissionId = sanitizeId(
+    `lead-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    'lead'
+  );
+  const path = `users/${cleanTargetUid}/leadSubmissions/${submissionId}`;
+
+  try {
+    await setDoc(doc(db, 'users', cleanTargetUid, 'leadSubmissions', submissionId), {
+      targetUid: cleanTargetUid,
+      id: submissionId,
+      fullName: safeName,
+      email: clamp(input.email.trim(), LIMITS.email),
+      contactNo: clamp(input.contactNo.trim(), LIMITS.contactNo),
+      portfolioUrl: clamp(input.portfolioUrl.trim(), LIMITS.url),
+      currentLocation: clamp(input.currentLocation.trim(), LIMITS.location),
+      yearsOfExperience: clamp(input.yearsOfExperience.trim(), LIMITS.experience),
+      designedAiProduct: clamp(input.designedAiProduct.trim(), LIMITS.aiProduct),
+      noticePeriod: clamp(input.noticePeriod.trim(), LIMITS.notice),
+      resumeUrl: clamp(input.resumeUrl.trim(), LIMITS.url),
+      message: clamp(input.message.trim(), LIMITS.message),
+      expectedSalary: clamp(input.expectedSalary.trim(), LIMITS.salary),
+      readyToRelocateIn: clamp(input.readyToRelocateIn.trim(), LIMITS.relocate),
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export function subscribeToIncomingLeadSubmissions(
+  uid: string,
+  onIncoming: (submissions: PendingLeadSubmission[]) => void,
+  onError: (err: Error) => void
+): () => void {
+  const path = `users/${uid}/leadSubmissions`;
+  return onSnapshot(
+    query(collection(db, 'users', uid, 'leadSubmissions'), where('targetUid', '==', uid)),
+    (snap) => {
+      if (snap.empty) return;
+      const items: PendingLeadSubmission[] = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: String(data.id ?? d.id),
+          fullName: String(data.fullName ?? ''),
+          email: String(data.email ?? ''),
+          contactNo: String(data.contactNo ?? ''),
+          portfolioUrl: String(data.portfolioUrl ?? ''),
+          currentLocation: String(data.currentLocation ?? ''),
+          yearsOfExperience: String(data.yearsOfExperience ?? ''),
+          designedAiProduct: String(data.designedAiProduct ?? ''),
+          noticePeriod: String(data.noticePeriod ?? ''),
+          resumeUrl: String(data.resumeUrl ?? ''),
+          message: String(data.message ?? ''),
+          expectedSalary: String(data.expectedSalary ?? ''),
+          readyToRelocateIn: String(data.readyToRelocateIn ?? ''),
+          createdAtIso: formatFirestoreTimestamp(data.createdAt),
+        };
+      });
+      onIncoming(items);
+    },
+    (err) => {
+      try {
+        handleFirestoreError(err, OperationType.LIST, path);
+      } catch (wrapped) {
+        onError(wrapped as Error);
+      }
+    }
+  );
+}
+
+export async function ingestLeadSubmissionsToCloud(
+  uid: string,
+  tasks: TaskItem[],
+  submissionIds: string[],
+  nextCodeNumber: number
+): Promise<void> {
+  const batch = writeBatch(db);
+  for (const t of tasks) {
+    batch.set(doc(db, 'users', uid, 'candidates', t.id), toCandidatePayload(uid, t, false, true));
+  }
+  for (const subId of submissionIds) {
+    batch.delete(doc(db, 'users', uid, 'leadSubmissions', subId));
+  }
+  batch.update(doc(db, 'users', uid, 'workspaces', 'default'), {
+    nextCodeNumber,
+    updatedAt: serverTimestamp(),
+  });
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${uid}/leadSubmissions`);
+  }
+}
+

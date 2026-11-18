@@ -2,10 +2,11 @@
 
 ## 1. Data Invariants
 1. **Strict Ownership**: Every document under `/users/{userId}/...` belongs solely to `userId`. Cross-user reads, queries, writes, or deletes are unconditionally rejected.
-2. **Verified Authentication Gate**: All reads and writes require `request.auth != null` and `request.auth.token.email_verified == true`.
-3. **Referential Integrity**: Every `CandidateRecord` must reference a valid `statusId` and `projectId` existing in the same user's `/statuses` and `/projects` collections (checked via `existsAfter()` to support atomic multi-document imports).
-4. **Immutable Ownership & Creation Time**: `ownerUid`, `uid`, `id`, and `createdAt` can never be reassigned on update. `createdAt` must equal `request.time` on create, and `updatedAt` must equal `request.time` on create and update.
-5. **Strict Key & Size Bounds**: Every document checks `keys().hasAll(...)` and `keys().hasOnly(...)` on create, `affectedKeys().hasOnly(...)` on update, and `.size()` limits on all strings and bounded arrays (`statusHistory.size() <= 20`).
+2. **Verified Authentication Gate**: All workspace reads, updates, deletes, and candidate/status/project creates require `request.auth != null` and `request.auth.token.email_verified == true`.
+3. **Write-Only Public Lead Intake Drop-Box**: `/users/{userId}/leadSubmissions/{submissionId}` permits unauthenticated `create` only with strict schema/size validation, `createdAt == request.time`, and an existing workspace (`exists(.../workspaces/default)`). Public reads, lists, updates, and deletes are unconditionally denied; only the verified workspace owner can read or clear incoming submissions.
+4. **Referential Integrity**: Every `CandidateRecord` must reference a valid `statusId` and `projectId` existing in the same user's `/statuses` and `/projects` collections (checked via `existsAfter()` to support atomic multi-document imports).
+5. **Immutable Ownership & Creation Time**: `ownerUid`, `uid`, `id`, and `createdAt` can never be reassigned on update. `createdAt` must equal `request.time` on create, and `updatedAt` must equal `request.time` on create and update.
+6. **Strict Key & Size Bounds**: Every document checks `keys().hasAll(...)` and `keys().hasOnly(...)` on create, `affectedKeys().hasOnly(...)` on update, and `.size()` limits on all strings and bounded arrays (`statusHistory.size() <= 20`).
 
 ## 2. "Dirty Dozen" Adversarial Payloads (Must All Return PERMISSION_DENIED)
 1. **Unauthenticated Read**: `get(/users/alice/candidates/cand-101)` with `auth = null`.

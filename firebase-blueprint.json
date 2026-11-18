@@ -357,6 +357,106 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "PublicLeadSubmission": {
+      "title": "PublicLeadSubmission",
+      "description": "Write-only incoming lead submission submitted via the shareable intake form.",
+      "type": "object",
+      "properties": {
+        "targetUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "email": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 254
+        },
+        "contactNo": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "portfolioUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "currentLocation": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "yearsOfExperience": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80
+        },
+        "designedAiProduct": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "noticePeriod": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "resumeUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "message": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4000
+        },
+        "expectedSalary": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "readyToRelocateIn": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 240
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "targetUid",
+        "id",
+        "fullName",
+        "email",
+        "contactNo",
+        "portfolioUrl",
+        "currentLocation",
+        "yearsOfExperience",
+        "designedAiProduct",
+        "noticePeriod",
+        "resumeUrl",
+        "message",
+        "expectedSalary",
+        "readyToRelocateIn",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -379,6 +479,10 @@
     "/users/{userId}/candidates/{candidateId}": {
       "schema": { "$ref": "#/entities/CandidateRecord" },
       "description": "Candidate records and Excel-imported rows."
+    },
+    "/users/{userId}/leadSubmissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/PublicLeadSubmission" },
+      "description": "Write-only incoming submissions from the shareable Lead Intake Form."
     }
   }
 }
