@@ -181,6 +181,36 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidLeadNotification(data, userId, notificationId) {
+      return data.keys().hasAll([
+          'ownerUid', 'id', 'type', 'candidateId', 'candidateCode', 'candidateName',
+          'candidateEmail', 'experience', 'designedAiProduct', 'title', 'message',
+          'read', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid', 'id', 'type', 'candidateId', 'candidateCode', 'candidateName',
+          'candidateEmail', 'experience', 'designedAiProduct', 'title', 'message',
+          'read', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerUid)
+        && data.ownerUid == userId
+        && data.ownerUid == request.auth.uid
+        && isValidId(data.id)
+        && data.id == notificationId
+        && data.type in ['new_lead']
+        && isValidId(data.candidateId)
+        && data.candidateCode is string && data.candidateCode.size() >= 1 && data.candidateCode.size() <= 32
+        && data.candidateName is string && data.candidateName.size() >= 1 && data.candidateName.size() <= 200
+        && data.candidateEmail is string && data.candidateEmail.size() <= 254
+        && data.experience is string && data.experience.size() <= 80
+        && data.designedAiProduct is string && data.designedAiProduct.size() <= 500
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 400
+        && data.read is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     match /users/{userId}/private/{docId} {
       allow get: if isVerifiedUser() && isOwner(userId) && isValidId(docId) && docId == 'profile';
       allow list: if false;
@@ -289,6 +319,28 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/users/$(userId)/workspaces/default);
       allow update: if false;
       allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(submissionId);
+    }
+
+    match /users/{userId}/notifications/{notificationId} {
+      allow get: if isVerifiedUser() && isOwner(userId) && isValidId(notificationId);
+      allow list: if isVerifiedUser() && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isOwner(userId)
+        && isValidId(notificationId)
+        && isValidLeadNotification(incoming(), userId, notificationId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/users/$(userId)/candidates/$(incoming().candidateId));
+      allow update: if isVerifiedUser()
+        && isOwner(userId)
+        && isValidId(notificationId)
+        && isValidLeadNotification(incoming(), userId, notificationId)
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(notificationId);
     }
 
     match /publicForms/{formId} {

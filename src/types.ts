@@ -80,3 +80,19 @@ export interface WorkspaceState {
   tasks: TaskItem[];
   nextCodeNumber: number;
 }
+
+export interface LeadNotification {
+  id: string;
+  type: 'new_lead';
+  candidateId: string;
+  candidateCode: string;
+  candidateName: string;
+  candidateEmail: string;
+  experience: string;
+  designedAiProduct: string;
+  title: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+

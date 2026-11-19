@@ -17,6 +17,7 @@ import {
 import { INITIAL_WORKSPACE_STATE } from '../data/seedData';
 import { OperationType, db, handleFirestoreError } from '../firebase';
 import {
+  LeadNotification,
   PriorityLevel,
   Project,
   StatusCategory,
@@ -764,7 +765,7 @@ export async function saveImportToCloud(
 }
 
 export async function resetWorkspaceInCloud(uid: string): Promise<void> {
-  const collectionsToClear = ['candidates', 'statuses', 'projects'] as const;
+  const collectionsToClear = ['candidates', 'statuses', 'projects', 'notifications'] as const;
   for (const colName of collectionsToClear) {
     try {
       const snap = await getDocs(
@@ -923,7 +924,7 @@ export async function ingestLeadSubmissionsToCloud(
   submissionIds: string[],
   nextCodeNumber: number
 ): Promise<void> {
-  const chunkSize = 150;
+  const chunkSize = 100;
   for (let i = 0; i < tasks.length; i += chunkSize) {
     const taskChunk = tasks.slice(i, i + chunkSize);
     const idChunk = submissionIds.slice(i, i + chunkSize);
@@ -931,10 +932,43 @@ export async function ingestLeadSubmissionsToCloud(
 
     const batch = writeBatch(db);
     for (const t of taskChunk) {
+      const candidateId = sanitizeId(t.id, 'cand');
       batch.set(
-        doc(db, 'users', uid, 'candidates', t.id),
+        doc(db, 'users', uid, 'candidates', candidateId),
         toCandidatePayload(uid, t, false, true)
       );
+
+      const notifId = sanitizeId(`notif-${candidateId}`, 'notif');
+      const safeName = clamp(t.fullName.trim() || 'New Candidate', LIMITS.fullName);
+      const safeExp = clamp(t.yearsOfExperience, LIMITS.experience);
+      const safeAi = clamp(t.designedAiProduct, LIMITS.aiProduct);
+      const summaryParts = [
+        safeExp || null,
+        t.currentLocation.trim() || null,
+        safeAi ? `AI: ${safeAi}` : null,
+      ].filter(Boolean);
+
+      batch.set(doc(db, 'users', uid, 'notifications', notifId), {
+        ownerUid: uid,
+        id: notifId,
+        type: 'new_lead',
+        candidateId,
+        candidateCode: clamp(t.code || 'CND-101', LIMITS.code),
+        candidateName: safeName,
+        candidateEmail: clamp(t.email, LIMITS.email),
+        experience: safeExp,
+        designedAiProduct: safeAi,
+        title: clamp('New Lead Application', 140),
+        message: clamp(
+          summaryParts.length > 0
+            ? `${safeName} (${summaryParts.join(' · ')}) submitted via Lead Intake Form.`
+            : `${safeName} submitted an application via Lead Intake Form.`,
+          400
+        ),
+        read: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
     }
     for (const subId of idChunk) {
       batch.delete(doc(db, 'users', uid, 'leadSubmissions', subId));
@@ -949,6 +983,101 @@ export async function ingestLeadSubmissionsToCloud(
       await batch.commit();
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `users/${uid}/leadSubmissions`);
+    }
+  }
+}
+
+export function subscribeToUserNotifications(
+  uid: string,
+  onSync: (notifications: LeadNotification[]) => void,
+  onError: (err: Error) => void
+): () => void {
+  const path = `users/${uid}/notifications`;
+  return onSnapshot(
+    query(collection(db, 'users', uid, 'notifications'), where('ownerUid', '==', uid)),
+    (snap) => {
+      const items: LeadNotification[] = snap.docs
+        .map((d) => {
+          const data = d.data();
+          return {
+            id: String(data.id ?? d.id),
+            type: 'new_lead' as const,
+            candidateId: String(data.candidateId ?? ''),
+            candidateCode: String(data.candidateCode ?? ''),
+            candidateName: String(data.candidateName ?? ''),
+            candidateEmail: String(data.candidateEmail ?? ''),
+            experience: String(data.experience ?? ''),
+            designedAiProduct: String(data.designedAiProduct ?? ''),
+            title: String(data.title ?? 'New Lead Application'),
+            message: String(data.message ?? ''),
+            read: Boolean(data.read),
+            createdAt: formatFirestoreTimestamp(data.createdAt),
+          };
+        })
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      onSync(items);
+    },
+    (err) => {
+      try {
+        handleFirestoreError(err, OperationType.LIST, path);
+      } catch (wrapped) {
+        onError(wrapped as Error);
+      }
+    }
+  );
+}
+
+export async function markNotificationReadInCloud(
+  uid: string,
+  notificationId: string,
+  read: boolean
+): Promise<void> {
+  const path = `users/${uid}/notifications/${notificationId}`;
+  try {
+    await updateDoc(doc(db, 'users', uid, 'notifications', notificationId), {
+      read,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function markAllNotificationsReadInCloud(
+  uid: string,
+  notificationIds: string[]
+): Promise<void> {
+  for (let i = 0; i < notificationIds.length; i += 350) {
+    const chunk = notificationIds.slice(i, i + 350);
+    const batch = writeBatch(db);
+    for (const id of chunk) {
+      batch.update(doc(db, 'users', uid, 'notifications', id), {
+        read: true,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}/notifications`);
+    }
+  }
+}
+
+export async function clearReadNotificationsInCloud(
+  uid: string,
+  notificationIds: string[]
+): Promise<void> {
+  for (let i = 0; i < notificationIds.length; i += 350) {
+    const chunk = notificationIds.slice(i, i + 350);
+    const batch = writeBatch(db);
+    for (const id of chunk) {
+      batch.delete(doc(db, 'users', uid, 'notifications', id));
+    }
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `users/${uid}/notifications`);
     }
   }
 }

@@ -500,6 +500,97 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "LeadNotification": {
+      "title": "LeadNotification",
+      "description": "Persistent real-time notification record created when a new lead arrives via the public intake form.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["new_lead"]
+        },
+        "candidateId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "candidateCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "candidateName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "candidateEmail": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 254
+        },
+        "experience": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80
+        },
+        "designedAiProduct": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "id",
+        "type",
+        "candidateId",
+        "candidateCode",
+        "candidateName",
+        "candidateEmail",
+        "experience",
+        "designedAiProduct",
+        "title",
+        "message",
+        "read",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -526,6 +617,10 @@
     "/users/{userId}/leadSubmissions/{submissionId}": {
       "schema": { "$ref": "#/entities/PublicLeadSubmission" },
       "description": "Write-only incoming submissions from the shareable Lead Intake Form."
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/LeadNotification" },
+      "description": "Persistent real-time new lead notifications for the workspace owner."
     },
     "/publicForms/{formId}": {
       "schema": { "$ref": "#/entities/PublicFormRoute" },

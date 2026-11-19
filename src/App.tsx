@@ -15,7 +15,9 @@ import {
 import { ListView } from './components/ListView';
 import { LoginScreen } from './components/LoginScreen';
 import { NewItemModal } from './components/NewItemModal';
+import { NewLeadToast } from './components/NewLeadToast';
 import { NewStatusModal } from './components/NewStatusModal';
+import { NotificationCenter } from './components/NotificationCenter';
 import { Sidebar } from './components/Sidebar';
 import { StatusPipelineView } from './components/StatusPipelineView';
 import { TopBar } from './components/TopBar';
@@ -24,10 +26,13 @@ import { auth } from './firebase';
 import {
   PUBLIC_FORM_SLUG_ID,
   PendingLeadSubmission,
+  clearReadNotificationsInCloud,
   ensurePublicFormRouteRegistered,
   ensureUserAccountAndWorkspaceSeeded,
   ingestLeadSubmissionsToCloud,
   isPublicLeadFormPathname,
+  markAllNotificationsReadInCloud,
+  markNotificationReadInCloud,
   resetWorkspaceInCloud,
   resolvePublicFormOwnerUid,
   saveBulkMovesToCloud,
@@ -43,9 +48,11 @@ import {
   saveTaskMoveToCloud,
   saveTaskUpdateToCloud,
   subscribeToIncomingLeadSubmissions,
+  subscribeToUserNotifications,
   subscribeToUserWorkspace,
 } from './services/firestoreWorkspace';
 import {
+  LeadNotification,
   PriorityLevel,
   Project,
   StatusCategory,
@@ -61,8 +68,16 @@ import {
   exportTasksToExcel,
   parseSpreadsheetFile,
 } from './utils/excelImport';
+import {
+  getBrowserNotificationPermission,
+  playNewLeadChime,
+  requestBrowserNotificationPermission,
+  showBrowserLeadNotification,
+} from './utils/notificationAlerts';
 
 const THEME_KEY = 'strata-theme-v1';
+const NOTIF_SOUND_KEY = 'uxd-vault-notif-sound-v1';
+const BASE_DOC_TITLE = 'UXD Vault — Candidate & Lead Tracking';
 const SEED_TASK_IDS = new Set(INITIAL_WORKSPACE_STATE.tasks.map((t) => t.id));
 
 export default function App() {
@@ -162,6 +177,24 @@ export default function App() {
     }
   });
 
+  const [notifications, setNotifications] = useState<LeadNotification[]>([]);
+  const [toastQueue, setToastQueue] = useState<LeadNotification[]>([]);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(NOTIF_SOUND_KEY);
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const soundEnabledRef = useRef(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
+  const [browserPermission, setBrowserPermission] = useState<
+    NotificationPermission | 'unsupported'
+  >(() => getBrowserNotificationPermission());
+  const initialNotifLoadDoneRef = useRef(false);
+  const seenNotificationIdsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
     try {
@@ -172,12 +205,25 @@ export default function App() {
   }, [isDark]);
 
   useEffect(() => {
+    if (!currentUser || !currentUser.emailVerified || publicLeadFormOwnerUid) {
+      document.title = BASE_DOC_TITLE;
+      return;
+    }
+    const unread = notifications.filter((n) => !n.read).length;
+    document.title = unread > 0 ? `(${unread}) ${BASE_DOC_TITLE}` : BASE_DOC_TITLE;
+  }, [notifications, currentUser, publicLeadFormOwnerUid]);
+
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
       setAuthReady(true);
       if (!user || !user.emailVerified) {
         setWorkspaceReady(false);
         cloudCandidateIdsRef.current = new Set();
+        setNotifications([]);
+        setToastQueue([]);
+        initialNotifLoadDoneRef.current = false;
+        seenNotificationIdsRef.current = new Set();
         setActiveView('dashboard');
       }
     });
@@ -192,6 +238,7 @@ export default function App() {
     let cancelled = false;
     let unsubscribeSnapshot: (() => void) | null = null;
     let unsubscribeLeadInbox: (() => void) | null = null;
+    let unsubscribeNotifications: (() => void) | null = null;
 
     const initCloud = async () => {
       try {
@@ -220,6 +267,40 @@ export default function App() {
             if (!cancelled) setFatalSyncError(err);
           }
         );
+        unsubscribeNotifications = subscribeToUserNotifications(
+          currentUser.uid,
+          (items) => {
+            if (cancelled) return;
+            setNotifications(items);
+
+            if (!initialNotifLoadDoneRef.current) {
+              items.forEach((n) => seenNotificationIdsRef.current.add(n.id));
+              initialNotifLoadDoneRef.current = true;
+              return;
+            }
+
+            const freshUnread = items.filter(
+              (n) => !n.read && !seenNotificationIdsRef.current.has(n.id)
+            );
+            items.forEach((n) => seenNotificationIdsRef.current.add(n.id));
+
+            if (freshUnread.length > 0) {
+              setToastQueue((prev) => [...freshUnread, ...prev].slice(0, 10));
+              if (soundEnabledRef.current) {
+                playNewLeadChime();
+              }
+              freshUnread.slice(0, 3).forEach((n) => {
+                showBrowserLeadNotification(n, (candidateId) => {
+                  setSelectedTaskId(candidateId);
+                  void markNotificationReadInCloud(currentUser.uid, n.id, true);
+                });
+              });
+            }
+          },
+          (err) => {
+            if (!cancelled) setFatalSyncError(err);
+          }
+        );
       } catch (err) {
         if (!cancelled) {
           setFatalSyncError(err instanceof Error ? err : new Error(String(err)));
@@ -233,6 +314,7 @@ export default function App() {
       cancelled = true;
       if (unsubscribeSnapshot) unsubscribeSnapshot();
       if (unsubscribeLeadInbox) unsubscribeLeadInbox();
+      if (unsubscribeNotifications) unsubscribeNotifications();
     };
   }, [authReady, currentUser, verificationTick]);
 
@@ -1062,6 +1144,55 @@ export default function App() {
     }
   };
 
+  const handleToggleSound = () => {
+    setSoundEnabled((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(NOTIF_SOUND_KEY, String(next));
+      } catch {
+        // Ignore storage failures
+      }
+      if (next) {
+        playNewLeadChime();
+      }
+      return next;
+    });
+  };
+
+  const handleRequestBrowserNotifications = async () => {
+    const result = await requestBrowserNotificationPermission();
+    setBrowserPermission(result);
+  };
+
+  const handleOpenCandidateFromNotification = (
+    candidateId: string,
+    notificationId: string
+  ) => {
+    setSelectedTaskId(candidateId);
+    setToastQueue((prev) => prev.filter((item) => item.id !== notificationId));
+    const target = notifications.find((n) => n.id === notificationId);
+    if (target && !target.read) {
+      void markNotificationReadInCloud(uid, notificationId, true).catch(reportAsyncError);
+    }
+  };
+
+  const handleToggleNotificationRead = (notificationId: string, nextRead: boolean) => {
+    void markNotificationReadInCloud(uid, notificationId, nextRead).catch(reportAsyncError);
+  };
+
+  const handleMarkAllNotificationsRead = () => {
+    const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
+    if (unreadIds.length === 0) return;
+    setToastQueue([]);
+    void markAllNotificationsReadInCloud(uid, unreadIds).catch(reportAsyncError);
+  };
+
+  const handleClearReadNotifications = () => {
+    const readIds = notifications.filter((n) => n.read).map((n) => n.id);
+    if (readIds.length === 0) return;
+    void clearReadNotificationsInCloud(uid, readIds).catch(reportAsyncError);
+  };
+
   return (
     <div
       onDragEnter={handleRootDragEnter}
@@ -1104,6 +1235,20 @@ export default function App() {
             setImportModalOpen(true);
           }}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
+          notificationSlot={
+            <NotificationCenter
+              notifications={notifications}
+              soundEnabled={soundEnabled}
+              onToggleSound={handleToggleSound}
+              browserPermission={browserPermission}
+              onRequestBrowserPermission={() => void handleRequestBrowserNotifications()}
+              onOpenCandidate={handleOpenCandidateFromNotification}
+              onToggleRead={handleToggleNotificationRead}
+              onMarkAllRead={handleMarkAllNotificationsRead}
+              onClearRead={handleClearReadNotifications}
+              onOpenLeadForm={() => setActiveView('form')}
+            />
+          }
         />
 
         {importBanner && (
@@ -1301,6 +1446,13 @@ export default function App() {
           setImportError(null);
         }}
         onConfirmImport={handleConfirmImport}
+      />
+
+      <NewLeadToast
+        notification={toastQueue[0] ?? null}
+        queueCount={toastQueue.length}
+        onViewLead={handleOpenCandidateFromNotification}
+        onDismiss={() => setToastQueue((prev) => prev.slice(1))}
       />
 
       {isDraggingFile && (

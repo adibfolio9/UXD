@@ -1,3 +1,4 @@
+import { ReactNode } from 'react';
 import { FileSpreadsheet, Menu, Plus, Search, X } from 'lucide-react';
 import { Project, ViewMode } from '../types';
 
@@ -11,6 +12,7 @@ interface TopBarProps {
   onOpenNewItem: () => void;
   onOpenImportSheet: () => void;
   onOpenMobileMenu: () => void;
+  notificationSlot?: ReactNode;
 }
 
 const VIEW_TITLES: Record<ViewMode, string> = {
@@ -33,6 +35,7 @@ export function TopBar({
   onOpenNewItem,
   onOpenImportSheet,
   onOpenMobileMenu,
+  notificationSlot,
 }: TopBarProps) {
   const projectLabel = selectedProject ? selectedProject.name : 'All Roles';
 
@@ -119,6 +122,8 @@ export function TopBar({
           <Plus className="w-4 h-4" />
           <span>New Candidate</span>
         </button>
+
+        {notificationSlot}
       </div>
     </header>
   );
