@@ -4,6 +4,49 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/assets/aistudio/image_9e6b3606.png" />
+    <script>
+      (function () {
+        var isExtensionNoise = function (filename, stack, message) {
+          if (typeof filename === 'string' && filename.indexOf('chrome-extension://') === 0) {
+            return true;
+          }
+          if (typeof stack === 'string' && stack.indexOf('chrome-extension://') !== -1) {
+            return true;
+          }
+          if (
+            typeof message === 'string' &&
+            message.indexOf('Cannot set property fetch of #<Window>') !== -1
+          ) {
+            return true;
+          }
+          return false;
+        };
+        window.addEventListener(
+          'error',
+          function (event) {
+            var stack = event && event.error && event.error.stack;
+            if (event && isExtensionNoise(event.filename, stack, event.message)) {
+              event.stopImmediatePropagation();
+              event.preventDefault();
+            }
+          },
+          true
+        );
+        window.addEventListener(
+          'unhandledrejection',
+          function (event) {
+            var reason = event && event.reason;
+            var stack = reason && reason.stack;
+            var msg = reason && reason.message;
+            if (isExtensionNoise('', stack, msg)) {
+              event.stopImmediatePropagation();
+              event.preventDefault();
+            }
+          },
+          true
+        );
+      })();
+    </script>
     <title>Strata — Project &amp; Status Tracking</title>
     <meta
       name="description"

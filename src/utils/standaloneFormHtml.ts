@@ -484,12 +484,16 @@ export function buildStandaloneLeadFormHtml(targetUid: string): string {
 
     <script type="module">
       import { initializeApp } from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-app.js';
-      import { doc, getFirestore, serverTimestamp, setDoc } from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-firestore.js';
+      import { doc, initializeFirestore, serverTimestamp, setDoc } from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-firestore.js';
 
       const firebaseConfig = ${configJson};
       const targetUid = document.getElementById('form-shell').dataset.targetUid;
       const app = initializeApp(firebaseConfig);
-      const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+      const db = initializeFirestore(
+        app,
+        { experimentalAutoDetectLongPolling: true, useFetchStreams: false },
+        firebaseConfig.firestoreDatabaseId
+      );
 
       let yearsOfExperience = '3–5 years';
       let designedAiProduct = 'Yes, launched';

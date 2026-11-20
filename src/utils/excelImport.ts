@@ -8,6 +8,7 @@ import {
   TaskItem,
   TeamMember,
 } from '../types';
+import { deduplicateTaskList } from './deduplicateCandidates';
 
 export interface ParsedWorkbook {
   fileName: string;
@@ -121,12 +122,12 @@ function extractHtmlCellValue(cell: Element): string {
   const text = (clone.textContent ?? '').trim();
 
   if (href && /^https?:\/\//i.test(href)) {
-    return href;
+    return href.replace(/^http:\/\/(https?:\/\/)/i, '$1').trim();
   }
   return text;
 }
 
-function parseHtmlSheetDocument(htmlText: string, fileName: string): ParsedWorkbook {
+export function parseHtmlSheetDocument(htmlText: string, fileName: string): ParsedWorkbook {
   const parser = new DOMParser();
   const doc = parser.parseFromString(htmlText, 'text/html');
   const tables = Array.from(doc.querySelectorAll('table'));
@@ -138,12 +139,25 @@ function parseHtmlSheetDocument(htmlText: string, fileName: string): ParsedWorkb
     throw new Error('No HTML table found in file.');
   }
 
-  const rawRows = Array.from(targetTable.querySelectorAll('tr'))
+  let rawRows = Array.from(targetTable.querySelectorAll('tr'))
     .map((tr) => Array.from(tr.querySelectorAll('th, td')).map(extractHtmlCellValue))
     .filter((cells) => cells.some((c) => c !== ''));
 
   if (rawRows.length === 0) {
     throw new Error('No data rows found in HTML table.');
+  }
+
+  // Handle Google Sheets HTML exports (row 0 = ['', 'A', 'B', ...], row 1 = ['1', 'Timestamp', ...])
+  const looksLikeGoogleSheetsGrid =
+    rawRows.length > 1 &&
+    rawRows[0][0] === '' &&
+    rawRows[0][1] === 'A' &&
+    rawRows[0][2] === 'B';
+  if (looksLikeGoogleSheetsGrid) {
+    rawRows = rawRows
+      .slice(1)
+      .filter((cells) => cells.slice(1).some((c) => c !== ''))
+      .map((cells) => cells.slice(1));
   }
 
   const seenHeaders = new Map<string, number>();
@@ -330,6 +344,48 @@ export function parsePriority(raw: string): PriorityLevel {
   return 'medium';
 }
 
+export function previewDeduplicationStats(
+  rows: Record<string, string>[],
+  mapping: ColumnMapping
+): { validCount: number; uniqueCount: number; duplicateCount: number } {
+  const minimalTasks: TaskItem[] = [];
+  rows.forEach((row, index) => {
+    const fullName = (mapping.fullName ? row[mapping.fullName] : '') || '';
+    const email = (mapping.email ? row[mapping.email] : '') || '';
+    if (!fullName.trim() && !email.trim()) return;
+    minimalTasks.push({
+      id: `prev-${index}`,
+      code: `CND-${index}`,
+      projectId: 'p',
+      statusId: 's',
+      order: index,
+      priority: 'medium',
+      assigneeId: 'a',
+      updatedAt: '',
+      statusHistory: [],
+      timestamp: (mapping.timestamp ? row[mapping.timestamp] : '') || '',
+      fullName: fullName.trim() || email.trim(),
+      email: email.trim(),
+      contactNo: (mapping.contactNo ? row[mapping.contactNo] : '') || '',
+      portfolioUrl: (mapping.portfolioUrl ? row[mapping.portfolioUrl] : '') || '',
+      currentLocation: '',
+      yearsOfExperience: '',
+      designedAiProduct: '',
+      noticePeriod: '',
+      resumeUrl: '',
+      message: '',
+      expectedSalary: '',
+      readyToRelocateIn: '',
+    });
+  });
+  const dedup = deduplicateTaskList(minimalTasks);
+  return {
+    validCount: minimalTasks.length,
+    uniqueCount: dedup.uniqueTasks.length,
+    duplicateCount: dedup.removedCount,
+  };
+}
+
 export function buildImportPayload(params: {
   rows: Record<string, string>[];
   mapping: ColumnMapping;
@@ -337,6 +393,7 @@ export function buildImportPayload(params: {
   existingProjects: Project[];
   members: TeamMember[];
   autoCreateStatuses: boolean;
+  deduplicate?: boolean;
   fallbackStatusId: string;
   fallbackProjectId: string;
   startingCodeNumber: number;
@@ -345,6 +402,7 @@ export function buildImportPayload(params: {
   newProjects: Project[];
   importedTasks: TaskItem[];
   nextCodeNumber: number;
+  duplicateRowsRemoved: number;
 } {
   const {
     rows,
@@ -353,6 +411,7 @@ export function buildImportPayload(params: {
     existingProjects,
     members,
     autoCreateStatuses,
+    deduplicate = true,
     fallbackStatusId,
     fallbackProjectId,
     startingCodeNumber,
@@ -368,13 +427,7 @@ export function buildImportPayload(params: {
   const workingProjects = [...existingProjects];
   const newProjects: Project[] = [];
 
-  let nextCode = startingCodeNumber;
-  const importedTasks: TaskItem[] = [];
-  const statusOrderCounters = new Map<string, number>();
-
-  for (const s of workingStatuses) {
-    statusOrderCounters.set(s.id, 0);
-  }
+  const rawImportedTasks: TaskItem[] = [];
 
   const findOrCreateStatus = (rawStatusName: string): string => {
     const trimmed = rawStatusName.trim();
@@ -405,7 +458,6 @@ export function buildImportPayload(params: {
       workingStatuses.push(created);
     }
     newStatuses.push(created);
-    statusOrderCounters.set(created.id, 0);
     return created.id;
   };
 
@@ -449,17 +501,14 @@ export function buildImportPayload(params: {
     const rawProject = mapping.project ? row[mapping.project] : '';
     const projectId = findOrCreateProject(rawProject);
 
-    const orderInCol = statusOrderCounters.get(statusId) ?? 0;
-    statusOrderCounters.set(statusId, orderInCol + 1);
-
     const nowFormatted = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
-    importedTasks.push({
+    rawImportedTasks.push({
       id: `cand-imp-${Date.now()}-${index}`,
-      code: `CND-${nextCode++}`,
+      code: `CND-${startingCodeNumber + index}`,
       projectId,
       statusId,
-      order: orderInCol,
+      order: 0,
       priority: parsePriority(mapping.priority ? row[mapping.priority] ?? '' : ''),
       assigneeId: members[index % members.length]?.id ?? 'member-priya',
       updatedAt: new Date().toISOString(),
@@ -483,6 +532,25 @@ export function buildImportPayload(params: {
     });
   });
 
+  const { uniqueTasks, removedCount } = deduplicate
+    ? deduplicateTaskList(rawImportedTasks)
+    : { uniqueTasks: rawImportedTasks, removedCount: 0 };
+  let nextCode = startingCodeNumber;
+  const statusOrderCounters = new Map<string, number>();
+  for (const s of workingStatuses) {
+    statusOrderCounters.set(s.id, 0);
+  }
+
+  const importedTasks = uniqueTasks.map((task) => {
+    const orderInCol = statusOrderCounters.get(task.statusId) ?? 0;
+    statusOrderCounters.set(task.statusId, orderInCol + 1);
+    return {
+      ...task,
+      code: `CND-${nextCode++}`,
+      order: orderInCol,
+    };
+  });
+
   const normalizedNewStatuses = workingStatuses
     .map((s, idx) => ({ ...s, order: idx }))
     .filter((s) => newStatuses.some((ns) => ns.id === s.id));
@@ -492,6 +560,7 @@ export function buildImportPayload(params: {
     newProjects,
     importedTasks,
     nextCodeNumber: nextCode,
+    duplicateRowsRemoved: removedCount,
   };
 }
 

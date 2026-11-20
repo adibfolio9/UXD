@@ -16,6 +16,8 @@ interface ImportExcelViewProps {
     newProjects: Project[];
     importedTasks: TaskItem[];
     nextCodeNumber: number;
+    duplicateRowsRemoved?: number;
+    deduplicate?: boolean;
   }) => void;
 }
 

@@ -26,6 +26,7 @@ import { auth } from './firebase';
 import {
   PUBLIC_FORM_SLUG_ID,
   PendingLeadSubmission,
+  WorkspaceSyncSnapshot,
   clearReadNotificationsInCloud,
   ensurePublicFormRouteRegistered,
   ensureUserAccountAndWorkspaceSeeded,
@@ -36,9 +37,11 @@ import {
   resetWorkspaceInCloud,
   resolvePublicFormOwnerUid,
   saveBulkMovesToCloud,
+  saveDeduplicationToCloud,
   saveImportToCloud,
   savePresetApplyToCloud,
   saveProjectCreateToCloud,
+  saveSheetSyncToCloud,
   saveStatusCreateToCloud,
   saveStatusDeleteToCloud,
   saveStatusUpdateToCloud,
@@ -64,6 +67,11 @@ import {
   WorkspaceState,
 } from './types';
 import {
+  buildSheetSyncPlan,
+  deduplicateTaskList,
+  mergeImportedTasksWithExisting,
+} from './utils/deduplicateCandidates';
+import {
   ParsedWorkbook,
   exportTasksToExcel,
   parseSpreadsheetFile,
@@ -77,6 +85,7 @@ import {
 
 const THEME_KEY = 'strata-theme-v1';
 const NOTIF_SOUND_KEY = 'uxd-vault-notif-sound-v1';
+const SHEET_SYNC_VERSION_KEY_PREFIX = 'uxd-vault-sheet-sync-v20261120-r2-';
 const BASE_DOC_TITLE = 'UXD Vault — Candidate & Lead Tracking';
 const SEED_TASK_IDS = new Set(INITIAL_WORKSPACE_STATE.tasks.map((t) => t.id));
 
@@ -92,6 +101,12 @@ export default function App() {
   workspaceRef.current = workspace;
 
   const cloudCandidateIdsRef = useRef<Set<string>>(new Set());
+  const seedReplacedRef = useRef<boolean>(false);
+  const cloudNextCodeRef = useRef<number>(INITIAL_WORKSPACE_STATE.nextCodeNumber);
+  const cleaningCloudDupesRef = useRef<boolean>(false);
+  const syncingUpdatedSheetRef = useRef<boolean>(false);
+  const importingToCloudRef = useRef<boolean>(false);
+  const pendingWorkspaceSnapshotRef = useRef<WorkspaceSyncSnapshot | null>(null);
 
   const [isVanityFormPath, setIsVanityFormPath] = useState<boolean>(() => {
     try {
@@ -220,6 +235,11 @@ export default function App() {
       if (!user || !user.emailVerified) {
         setWorkspaceReady(false);
         cloudCandidateIdsRef.current = new Set();
+        seedReplacedRef.current = false;
+        cleaningCloudDupesRef.current = false;
+        syncingUpdatedSheetRef.current = false;
+        importingToCloudRef.current = false;
+        pendingWorkspaceSnapshotRef.current = null;
         setNotifications([]);
         setToastQueue([]);
         initialNotifLoadDoneRef.current = false;
@@ -249,9 +269,147 @@ export default function App() {
           currentUser.uid,
           (snapshot) => {
             if (cancelled) return;
+            if (importingToCloudRef.current || syncingUpdatedSheetRef.current) {
+              pendingWorkspaceSnapshotRef.current = snapshot;
+              return;
+            }
+            pendingWorkspaceSnapshotRef.current = null;
             cloudCandidateIdsRef.current = snapshot.cloudCandidateIds;
+            seedReplacedRef.current = snapshot.seedReplaced;
+            cloudNextCodeRef.current = snapshot.cloudNextCodeNumber;
             setWorkspace(snapshot.workspace);
             setWorkspaceReady(true);
+
+            const { docIdsToDelete, tasksToSoftDelete, tasksToUpdate } =
+              snapshot.cloudCleanupPlan;
+            const hasCloudCleanup =
+              docIdsToDelete.length > 0 ||
+              tasksToSoftDelete.length > 0 ||
+              tasksToUpdate.length > 0;
+
+            if (hasCloudCleanup && !cleaningCloudDupesRef.current) {
+              cleaningCloudDupesRef.current = true;
+              if (snapshot.rawDuplicateCount > 0) {
+                setImportBanner(
+                  `Removed ${snapshot.rawDuplicateCount} duplicate candidate ${
+                    snapshot.rawDuplicateCount === 1 ? 'row' : 'rows'
+                  } and synced to cloud.`
+                );
+              }
+              void saveDeduplicationToCloud(
+                currentUser.uid,
+                snapshot.cloudCleanupPlan,
+                snapshot.cloudCandidateIds
+              )
+                .catch((err) => {
+                  if (!cancelled) {
+                    setFatalSyncError(
+                      err instanceof Error ? err : new Error(String(err))
+                    );
+                  }
+                })
+                .finally(() => {
+                  cleaningCloudDupesRef.current = false;
+                });
+              return;
+            }
+
+            if (
+              snapshot.seedReplaced &&
+              !hasCloudCleanup &&
+              !cleaningCloudDupesRef.current &&
+              !syncingUpdatedSheetRef.current
+            ) {
+              const syncKey = `${SHEET_SYNC_VERSION_KEY_PREFIX}${currentUser.uid}`;
+              let alreadySynced = false;
+              try {
+                alreadySynced = localStorage.getItem(syncKey) === 'done';
+              } catch {
+                alreadySynced = false;
+              }
+
+              if (!alreadySynced) {
+                const plan = buildSheetSyncPlan(
+                  snapshot.workspace.tasks,
+                  INITIAL_WORKSPACE_STATE.tasks,
+                  snapshot.workspace.statuses,
+                  snapshot.workspace.projects,
+                  snapshot.workspace.nextCodeNumber
+                );
+                const hasDiff =
+                  plan.tasksToInsert.length > 0 ||
+                  plan.tasksToUpdate.length > 0 ||
+                  plan.duplicateIdsRemoved.length > 0;
+
+                if (hasDiff) {
+                  syncingUpdatedSheetRef.current = true;
+                  setWorkspace({
+                    ...snapshot.workspace,
+                    tasks: plan.mergedTasks,
+                    nextCodeNumber: Math.max(
+                      snapshot.workspace.nextCodeNumber,
+                      plan.nextCodeNumber
+                    ),
+                  });
+                  const parts: string[] = [];
+                  if (plan.tasksToInsert.length > 0) {
+                    parts.push(`${plan.tasksToInsert.length} added`);
+                  }
+                  if (plan.tasksToUpdate.length > 0) {
+                    parts.push(`${plan.tasksToUpdate.length} updated`);
+                  }
+                  if (plan.duplicateIdsRemoved.length > 0) {
+                    parts.push(`${plan.duplicateIdsRemoved.length} duplicates removed`);
+                  }
+                  setImportBanner(
+                    `Updated candidate list (${parts.join(', ')}) — synced to cloud.`
+                  );
+
+                  void saveSheetSyncToCloud(
+                    currentUser.uid,
+                    {
+                      tasksToInsert: plan.tasksToInsert,
+                      tasksToUpdate: plan.tasksToUpdate,
+                      docIdsToDelete: plan.duplicateIdsRemoved,
+                      nextCodeNumber: plan.nextCodeNumber,
+                      currentCloudNextCodeNumber: snapshot.cloudNextCodeNumber,
+                    },
+                    snapshot.cloudCandidateIds
+                  )
+                    .then(() => {
+                      try {
+                        localStorage.setItem(syncKey, 'done');
+                      } catch {
+                        // Ignore storage failures
+                      }
+                    })
+                    .catch((err) => {
+                      if (!cancelled) {
+                        setFatalSyncError(
+                          err instanceof Error ? err : new Error(String(err))
+                        );
+                      }
+                    })
+                    .finally(() => {
+                      syncingUpdatedSheetRef.current = false;
+                      const pending = pendingWorkspaceSnapshotRef.current;
+                      pendingWorkspaceSnapshotRef.current = null;
+                      if (!cancelled && pending) {
+                        cloudCandidateIdsRef.current = pending.cloudCandidateIds;
+                        seedReplacedRef.current = pending.seedReplaced;
+                        cloudNextCodeRef.current = pending.cloudNextCodeNumber;
+                        setWorkspace(pending.workspace);
+                      }
+                    });
+                } else {
+                  try {
+                    localStorage.setItem(syncKey, 'done');
+                  } catch {
+                    // Ignore storage failures
+                  }
+                }
+              }
+            }
           },
           (err) => {
             if (!cancelled) setFatalSyncError(err);
@@ -1018,7 +1176,167 @@ export default function App() {
     setAssigneeFilter('all');
     setSelectedTaskId(null);
     setActiveView('dashboard');
-    void resetWorkspaceInCloud(uid).catch(reportAsyncError);
+    try {
+      localStorage.removeItem(`${SHEET_SYNC_VERSION_KEY_PREFIX}${uid}`);
+    } catch {
+      // Ignore storage failures
+    }
+    importingToCloudRef.current = true;
+    pendingWorkspaceSnapshotRef.current = null;
+    void resetWorkspaceInCloud(uid)
+      .catch(reportAsyncError)
+      .finally(() => {
+        importingToCloudRef.current = false;
+        flushPendingSnapshot();
+      });
+  };
+
+  const handleRemoveDuplicates = () => {
+    const prev = workspaceRef.current;
+    const result = deduplicateTaskList(prev.tasks);
+    if (result.removedCount === 0) {
+      setImportBanner(
+        `No duplicates found — all ${prev.tasks.length} candidate ${
+          prev.tasks.length === 1 ? 'row is' : 'rows are'
+        } unique.`
+      );
+      return;
+    }
+
+    setWorkspace({
+      ...prev,
+      tasks: result.uniqueTasks,
+    });
+
+    const docIdsToDelete: string[] = [];
+    const tasksToSoftDelete: TaskItem[] = [];
+    for (const dup of result.removedDuplicates) {
+      if (!seedReplacedRef.current && SEED_TASK_IDS.has(dup.id)) {
+        tasksToSoftDelete.push(dup);
+      } else if (cloudCandidateIdsRef.current.has(dup.id)) {
+        docIdsToDelete.push(dup.id);
+      }
+    }
+
+    setImportBanner(
+      `Removed ${result.removedCount} duplicate candidate ${
+        result.removedCount === 1 ? 'row' : 'rows'
+      } and synced to cloud.`
+    );
+
+    void saveDeduplicationToCloud(
+      uid,
+      {
+        docIdsToDelete,
+        tasksToSoftDelete,
+        tasksToUpdate: result.updatedSurvivors,
+      },
+      cloudCandidateIdsRef.current
+    ).catch(reportAsyncError);
+  };
+
+  const flushPendingSnapshot = () => {
+    const pending = pendingWorkspaceSnapshotRef.current;
+    pendingWorkspaceSnapshotRef.current = null;
+    if (!pending) return;
+    cloudCandidateIdsRef.current = pending.cloudCandidateIds;
+    seedReplacedRef.current = pending.seedReplaced;
+    cloudNextCodeRef.current = pending.cloudNextCodeNumber;
+    setWorkspace(pending.workspace);
+  };
+
+  const handleSyncLatestSheet = () => {
+    const prev = workspaceRef.current;
+    const plan = buildSheetSyncPlan(
+      prev.tasks,
+      INITIAL_WORKSPACE_STATE.tasks,
+      prev.statuses,
+      prev.projects,
+      prev.nextCodeNumber
+    );
+
+    const insertIdSet = new Set(plan.tasksToInsert.map((t) => t.id));
+    const updateIdSet = new Set(plan.tasksToUpdate.map((t) => t.id));
+    const missingFromCloudTasks = plan.mergedTasks.filter(
+      (t) =>
+        !cloudCandidateIdsRef.current.has(t.id) &&
+        !insertIdSet.has(t.id) &&
+        !updateIdSet.has(t.id)
+    );
+    const allTasksToInsert = [...plan.tasksToInsert, ...missingFromCloudTasks];
+
+    const hasDiff =
+      plan.tasksToInsert.length > 0 ||
+      plan.tasksToUpdate.length > 0 ||
+      plan.duplicateIdsRemoved.length > 0;
+
+    if (!hasDiff && missingFromCloudTasks.length === 0) {
+      setImportBanner(
+        `All ${prev.tasks.length} unique candidate rows are already uploaded and synced to cloud.`
+      );
+      return;
+    }
+
+    const removedIdSet = new Set(plan.duplicateIdsRemoved);
+    const docIdsToDelete: string[] = [];
+    const tasksToSoftDelete: TaskItem[] = [];
+    for (const t of prev.tasks) {
+      if (!removedIdSet.has(t.id)) continue;
+      if (!seedReplacedRef.current && SEED_TASK_IDS.has(t.id)) {
+        tasksToSoftDelete.push(t);
+      } else if (cloudCandidateIdsRef.current.has(t.id)) {
+        docIdsToDelete.push(t.id);
+      }
+    }
+
+    setWorkspace({
+      ...prev,
+      tasks: plan.mergedTasks,
+      nextCodeNumber: Math.max(prev.nextCodeNumber, plan.nextCodeNumber),
+    });
+
+    const parts: string[] = [];
+    if (plan.tasksToInsert.length > 0) parts.push(`${plan.tasksToInsert.length} added`);
+    if (plan.tasksToUpdate.length > 0) parts.push(`${plan.tasksToUpdate.length} updated`);
+    if (plan.duplicateIdsRemoved.length > 0) {
+      parts.push(`${plan.duplicateIdsRemoved.length} duplicates removed`);
+    }
+    if (parts.length > 0) {
+      setImportBanner(
+        `Synced Form Responses list (${parts.join(', ')}) — ${plan.mergedTasks.length} unique candidates saved to cloud.`
+      );
+    } else {
+      setImportBanner(
+        `Uploaded all ${plan.mergedTasks.length} unique candidates (${missingFromCloudTasks.length} synced to cloud).`
+      );
+    }
+
+    importingToCloudRef.current = true;
+    pendingWorkspaceSnapshotRef.current = null;
+    void saveSheetSyncToCloud(
+      uid,
+      {
+        tasksToInsert: allTasksToInsert,
+        tasksToUpdate: plan.tasksToUpdate,
+        docIdsToDelete,
+        tasksToSoftDelete,
+        nextCodeNumber: plan.nextCodeNumber,
+        currentCloudNextCodeNumber: cloudNextCodeRef.current,
+      },
+      cloudCandidateIdsRef.current
+    )
+      .then(() => {
+        try {
+          localStorage.setItem(`${SHEET_SYNC_VERSION_KEY_PREFIX}${uid}`, 'done');
+        } catch {
+          // Ignore storage failures
+        }
+      })
+      .catch(reportAsyncError)
+      .finally(() => {
+        importingToCloudRef.current = false;
+        flushPendingSnapshot();
+      });
   };
 
   const handleConfirmImport = (payload: {
@@ -1028,6 +1346,8 @@ export default function App() {
     newProjects: Project[];
     importedTasks: TaskItem[];
     nextCodeNumber: number;
+    duplicateRowsRemoved?: number;
+    deduplicate?: boolean;
   }) => {
     const prev = workspaceRef.current;
     const mergedStatuses = [...prev.statuses].sort((a, b) => a.order - b.order);
@@ -1047,10 +1367,14 @@ export default function App() {
 
     let offsetTasks: TaskItem[];
     let mergedTasks: TaskItem[];
+    let updatedExistingTasks: TaskItem[] = [];
+    let totalDupesSkipped = payload.duplicateRowsRemoved ?? 0;
+    const shouldDeduplicate = payload.deduplicate !== false;
+
     if (payload.mode === 'replace') {
       offsetTasks = payload.importedTasks;
       mergedTasks = offsetTasks;
-    } else {
+    } else if (!shouldDeduplicate) {
       const existingCountByStatus = new Map<string, number>();
       for (const t of prev.tasks) {
         existingCountByStatus.set(
@@ -1064,6 +1388,30 @@ export default function App() {
         return { ...t, order: offset };
       });
       mergedTasks = [...prev.tasks, ...offsetTasks];
+    } else {
+      const mergeResult = mergeImportedTasksWithExisting(
+        prev.tasks,
+        payload.importedTasks
+      );
+      totalDupesSkipped += mergeResult.skippedAsDuplicateCount;
+      updatedExistingTasks = mergeResult.updatedExistingTasks;
+
+      const updatedMap = new Map(updatedExistingTasks.map((t) => [t.id, t]));
+      const baseExistingTasks = prev.tasks.map((t) => updatedMap.get(t.id) ?? t);
+
+      const existingCountByStatus = new Map<string, number>();
+      for (const t of baseExistingTasks) {
+        existingCountByStatus.set(
+          t.statusId,
+          (existingCountByStatus.get(t.statusId) ?? 0) + 1
+        );
+      }
+      offsetTasks = mergeResult.newTasksToInsert.map((t) => {
+        const offset = existingCountByStatus.get(t.statusId) ?? 0;
+        existingCountByStatus.set(t.statusId, offset + 1);
+        return { ...t, order: offset };
+      });
+      mergedTasks = [...baseExistingTasks, ...offsetTasks];
     }
 
     const nextCode = Math.max(prev.nextCodeNumber, payload.nextCodeNumber);
@@ -1079,12 +1427,60 @@ export default function App() {
     setActiveView(payload.targetView);
     setDroppedWorkbook(null);
     setImportError(null);
+
+    const targetLabel = payload.targetView === 'board' ? 'Kanban Board' : 'List View';
+    const dupeNote =
+      totalDupesSkipped > 0
+        ? ` (${totalDupesSkipped} ${totalDupesSkipped === 1 ? 'duplicate' : 'duplicates'} removed)`
+        : '';
+
+    const missingFromCloudInAppend =
+      payload.mode === 'append'
+        ? mergedTasks.filter((t) => !cloudCandidateIdsRef.current.has(t.id))
+        : [];
+
+    if (
+      payload.mode === 'append' &&
+      offsetTasks.length === 0 &&
+      updatedExistingTasks.length === 0 &&
+      payload.newStatuses.length === 0 &&
+      payload.newProjects.length === 0
+    ) {
+      setImportBanner(
+        `Uploaded & verified ${mergedTasks.length} unique candidates in ${targetLabel}${dupeNote} — synced to cloud.`
+      );
+      if (missingFromCloudInAppend.length === 0) {
+        return;
+      }
+      importingToCloudRef.current = true;
+      pendingWorkspaceSnapshotRef.current = null;
+      void saveSheetSyncToCloud(
+        uid,
+        {
+          tasksToInsert: missingFromCloudInAppend,
+          tasksToUpdate: [],
+          docIdsToDelete: [],
+          nextCodeNumber: nextCode,
+          currentCloudNextCodeNumber: cloudNextCodeRef.current,
+        },
+        cloudCandidateIdsRef.current
+      )
+        .catch(reportAsyncError)
+        .finally(() => {
+          importingToCloudRef.current = false;
+          flushPendingSnapshot();
+        });
+      return;
+    }
+
     setImportBanner(
-      `Fetched ${payload.importedTasks.length} ${
-        payload.importedTasks.length === 1 ? 'item' : 'items'
-      } into ${payload.targetView === 'board' ? 'Kanban Board' : 'List View'} (synced to cloud).`
+      `Fetched ${offsetTasks.length} ${
+        offsetTasks.length === 1 ? 'item' : 'items'
+      } into ${targetLabel}${dupeNote} — synced to cloud.`
     );
 
+    importingToCloudRef.current = true;
+    pendingWorkspaceSnapshotRef.current = null;
     void saveImportToCloud(uid, {
       mode: payload.mode,
       newStatuses: payload.newStatuses,
@@ -1092,7 +1488,33 @@ export default function App() {
       newProjects: payload.newProjects,
       importedTasks: offsetTasks,
       nextCodeNumber: nextCode,
-    }).catch(reportAsyncError);
+    })
+      .then(() => {
+        if (payload.mode === 'replace') {
+          try {
+            localStorage.setItem(`${SHEET_SYNC_VERSION_KEY_PREFIX}${uid}`, 'done');
+          } catch {
+            // Ignore storage failures
+          }
+        }
+        if (updatedExistingTasks.length > 0) {
+          return saveDeduplicationToCloud(
+            uid,
+            {
+              docIdsToDelete: [],
+              tasksToSoftDelete: [],
+              tasksToUpdate: updatedExistingTasks,
+            },
+            cloudCandidateIdsRef.current
+          );
+        }
+        return undefined;
+      })
+      .catch(reportAsyncError)
+      .finally(() => {
+        importingToCloudRef.current = false;
+        flushPendingSnapshot();
+      });
   };
 
   const isFileDrag = (e: React.DragEvent) =>
@@ -1352,6 +1774,7 @@ export default function App() {
                     setImportError(null);
                     setImportModalOpen(true);
                   }}
+                  onSyncLatestSheet={handleSyncLatestSheet}
                   onExportExcel={() =>
                     exportTasksToExcel({
                       tasks: filteredTasks,
@@ -1359,6 +1782,7 @@ export default function App() {
                       projects: workspace.projects,
                     })
                   }
+                  onRemoveDuplicates={handleRemoveDuplicates}
                 />
               )}
 

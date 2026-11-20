@@ -27,8 +27,21 @@ import {
   TaskItem,
   WorkspaceState,
 } from '../types';
+import {
+  areCandidatesSamePerson,
+  deduplicateTaskList,
+} from '../utils/deduplicateCandidates';
 
 const VALID_ID_RE = /^[a-zA-Z0-9_-]+$/;
+const VALID_PRIORITIES = new Set<PriorityLevel>(['urgent', 'high', 'medium', 'low']);
+
+// Firestore enforces a hard cap of 20 get()/exists()/getAfter()/existsAfter() calls per writeBatch.
+// Each candidate create/update triggers 2 existsAfter() checks (statusId + projectId).
+// Each lead ingest item creates 1 candidate (2 existsAfter) + 1 notification (1 existsAfter) = 3 checks.
+const CANDIDATE_WRITE_BATCH_SIZE = 8;
+const LEAD_INGEST_BATCH_SIZE = 5;
+const DELETE_BATCH_SIZE = 350;
+const BATCH_COMMIT_CONCURRENCY = 5;
 
 const LIMITS = {
   workspaceName: 100,
@@ -61,9 +74,30 @@ function clamp(val: string | undefined | null, max: number): string {
 }
 
 function sanitizeId(raw: string, fallbackPrefix: string): string {
-  const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 128);
+  const cleaned = (raw ?? '').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 128);
   if (cleaned && VALID_ID_RE.test(cleaned)) return cleaned;
   return `${fallbackPrefix}-${Date.now()}`;
+}
+
+function sanitizePriority(raw: unknown): PriorityLevel {
+  return typeof raw === 'string' && VALID_PRIORITIES.has(raw as PriorityLevel)
+    ? (raw as PriorityLevel)
+    : 'medium';
+}
+
+function sanitizeOrder(raw: unknown): number {
+  const num = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.min(100000, Math.floor(num)));
+}
+
+function sanitizeHistory(history: StatusTransition[] | undefined) {
+  return (history ?? []).slice(0, LIMITS.historyMax).map((h) => ({
+    id: clamp(h.id, 128),
+    fromStatusName: clamp(h.fromStatusName, 80),
+    toStatusName: clamp(h.toStatusName, 80),
+    changedAt: clamp(h.changedAt, 64),
+  }));
 }
 
 function toStatusPayload(uid: string, s: StatusDefinition, includeCreatedAt: boolean) {
@@ -78,7 +112,7 @@ function toStatusPayload(uid: string, s: StatusDefinition, includeCreatedAt: boo
         ? Math.max(1, Math.min(10000, Math.floor(s.wipLimit)))
         : null,
     description: clamp(s.description, LIMITS.statusDesc),
-    order: Math.max(0, Math.min(1000, Math.floor(s.order))),
+    order: Math.max(0, Math.min(1000, Math.floor(Number.isFinite(s.order) ? s.order : 0))),
     updatedAt: serverTimestamp(),
   };
   if (includeCreatedAt) {
@@ -94,7 +128,7 @@ function toProjectPayload(uid: string, p: Project, includeCreatedAt: boolean) {
     key: clamp(p.key.trim() || 'ROLE', LIMITS.projectKey),
     name: clamp(p.name.trim() || 'Untitled Track', LIMITS.projectName),
     summary: clamp(p.summary, LIMITS.projectSummary),
-    leadId: clamp(p.leadId || 'member-priya', LIMITS.leadId),
+    leadId: clamp((p.leadId || '').trim() || 'member-priya', LIMITS.leadId),
     targetDate: clamp(p.targetDate, LIMITS.targetDate),
     updatedAt: serverTimestamp(),
   };
@@ -111,25 +145,19 @@ function toCandidatePayload(
   includeCreatedAt: boolean
 ) {
   const safeName = clamp(
-    t.fullName.trim() || t.email.trim() || t.code || 'Candidate',
+    (t.fullName || '').trim() || (t.email || '').trim() || (t.code || '').trim() || 'Candidate',
     LIMITS.fullName
   );
-  const safeHistory = (t.statusHistory ?? []).slice(0, LIMITS.historyMax).map((h) => ({
-    id: clamp(h.id, 128),
-    fromStatusName: clamp(h.fromStatusName, 80),
-    toStatusName: clamp(h.toStatusName, 80),
-    changedAt: clamp(h.changedAt, 64),
-  }));
 
   const base: Record<string, unknown> = {
     ownerUid: uid,
     id: sanitizeId(t.id, 'cand'),
-    code: clamp(t.code || 'CND-101', LIMITS.code),
+    code: clamp((t.code || '').trim() || 'CND-101', LIMITS.code),
     projectId: sanitizeId(t.projectId, 'proj'),
     statusId: sanitizeId(t.statusId, 'status'),
-    order: Math.max(0, Math.min(100000, Math.floor(t.order))),
-    priority: t.priority,
-    assigneeId: clamp(t.assigneeId || 'member-priya', LIMITS.assigneeId),
+    order: sanitizeOrder(t.order),
+    priority: sanitizePriority(t.priority),
+    assigneeId: clamp((t.assigneeId || '').trim() || 'member-priya', LIMITS.assigneeId),
     deleted,
     timestamp: clamp(t.timestamp, LIMITS.timestamp),
     fullName: safeName,
@@ -144,13 +172,112 @@ function toCandidatePayload(
     message: clamp(t.message, LIMITS.message),
     expectedSalary: clamp(t.expectedSalary, LIMITS.salary),
     readyToRelocateIn: clamp(t.readyToRelocateIn, LIMITS.relocate),
-    statusHistory: safeHistory,
+    statusHistory: sanitizeHistory(t.statusHistory),
     updatedAt: serverTimestamp(),
   };
   if (includeCreatedAt) {
     base.createdAt = serverTimestamp();
   }
   return base;
+}
+
+interface FirestoreValidRefs {
+  validStatusIds: Set<string>;
+  fallbackStatusId: string;
+  validProjectIds: Set<string>;
+  fallbackProjectId: string;
+}
+
+async function resolveValidFirestoreRefs(uid: string): Promise<FirestoreValidRefs> {
+  const [statusesSnap, projectsSnap] = await Promise.all([
+    getDocs(query(collection(db, 'users', uid, 'statuses'), where('ownerUid', '==', uid))),
+    getDocs(query(collection(db, 'users', uid, 'projects'), where('ownerUid', '==', uid))),
+  ]);
+
+  const statusIds: string[] = [];
+  const projectIds: string[] = [];
+
+  if (statusesSnap.empty || projectsSnap.empty) {
+    const repairBatch = writeBatch(db);
+    if (statusesSnap.empty) {
+      for (const s of INITIAL_WORKSPACE_STATE.statuses) {
+        const sid = sanitizeId(s.id, 'status');
+        repairBatch.set(doc(db, 'users', uid, 'statuses', sid), toStatusPayload(uid, s, true));
+        statusIds.push(sid);
+      }
+    } else {
+      statusesSnap.docs
+        .map((d) => ({ id: d.id, order: Number(d.data().order ?? 0) }))
+        .sort((a, b) => a.order - b.order)
+        .forEach((s) => statusIds.push(s.id));
+    }
+
+    if (projectsSnap.empty) {
+      for (const p of INITIAL_WORKSPACE_STATE.projects) {
+        const pid = sanitizeId(p.id, 'proj');
+        repairBatch.set(doc(db, 'users', uid, 'projects', pid), toProjectPayload(uid, p, true));
+        projectIds.push(pid);
+      }
+    } else {
+      projectsSnap.docs.forEach((d) => projectIds.push(d.id));
+    }
+
+    try {
+      await repairBatch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `users/${uid}/statuses`);
+    }
+  } else {
+    statusesSnap.docs
+      .map((d) => ({ id: d.id, order: Number(d.data().order ?? 0) }))
+      .sort((a, b) => a.order - b.order)
+      .forEach((s) => statusIds.push(s.id));
+    projectsSnap.docs.forEach((d) => projectIds.push(d.id));
+  }
+
+  return {
+    validStatusIds: new Set(statusIds),
+    fallbackStatusId: statusIds[0] ?? 'status-applied',
+    validProjectIds: new Set(projectIds),
+    fallbackProjectId: projectIds[0] ?? 'proj-lead-staff',
+  };
+}
+
+function normalizeTaskForFirestore(task: TaskItem, refs: FirestoreValidRefs): TaskItem {
+  const statusId = sanitizeId(task.statusId, 'status');
+  const projectId = sanitizeId(task.projectId, 'proj');
+  return {
+    ...task,
+    id: sanitizeId(task.id, 'cand'),
+    statusId: refs.validStatusIds.has(statusId) ? statusId : refs.fallbackStatusId,
+    projectId: refs.validProjectIds.has(projectId) ? projectId : refs.fallbackProjectId,
+  };
+}
+
+async function commitBatchesInWaves(
+  ops: Array<(batch: ReturnType<typeof writeBatch>) => void>,
+  batchSize: number,
+  operationType: OperationType,
+  errorPath: string
+): Promise<void> {
+  if (ops.length === 0) return;
+
+  const batches: Array<ReturnType<typeof writeBatch>> = [];
+  for (let i = 0; i < ops.length; i += batchSize) {
+    const chunk = ops.slice(i, i + batchSize);
+    const batch = writeBatch(db);
+    chunk.forEach((applyOp) => applyOp(batch));
+    batches.push(batch);
+  }
+
+  for (let i = 0; i < batches.length; i += BATCH_COMMIT_CONCURRENCY) {
+    const wave = batches.slice(i, i + BATCH_COMMIT_CONCURRENCY);
+    try {
+      await Promise.all(wave.map((b) => b.commit()));
+    } catch (error) {
+      handleFirestoreError(error, operationType, errorPath);
+    }
+  }
 }
 
 function formatFirestoreTimestamp(val: unknown): string {
@@ -216,16 +343,27 @@ export async function ensureUserAccountAndWorkspaceSeeded(user: User): Promise<v
         batch.set(doc(db, 'users', uid, 'projects', p.id), toProjectPayload(uid, p, true));
       }
       await batch.commit();
+    } else {
+      await resolveValidFirestoreRefs(uid);
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, workspacePath);
   }
 }
 
+export interface CloudCleanupPlan {
+  docIdsToDelete: string[];
+  tasksToSoftDelete: TaskItem[];
+  tasksToUpdate: TaskItem[];
+}
+
 export interface WorkspaceSyncSnapshot {
   workspace: WorkspaceState;
   cloudCandidateIds: Set<string>;
   seedReplaced: boolean;
+  cloudNextCodeNumber: number;
+  rawDuplicateCount: number;
+  cloudCleanupPlan: CloudCleanupPlan;
 }
 
 export function subscribeToUserWorkspace(
@@ -265,21 +403,83 @@ export function subscribeToUserWorkspace(
     const validProjectIds = new Set(activeProjects.map((p) => p.id));
     const fallbackProjectId = activeProjects[0]?.id ?? 'proj-lead-staff';
 
-    let mergedTasks: TaskItem[];
+    const seedTaskIdSet = new Set(INITIAL_WORKSPACE_STATE.tasks.map((t) => t.id));
+    const cleanupPlan: CloudCleanupPlan = {
+      docIdsToDelete: [],
+      tasksToSoftDelete: [],
+      tasksToUpdate: [],
+    };
+
+    let rawTasks: TaskItem[];
     if (workspaceMeta.seedReplaced) {
-      mergedTasks = cloudCandidates
+      rawTasks = cloudCandidates
         .filter((c) => !c.deleted)
-        .map(({ deleted: _deleted, ...rest }) => rest);
+        .map(({ deleted: _deleted, ...rest }) => ({
+          ...rest,
+          statusId: validStatusIds.has(rest.statusId) ? rest.statusId : fallbackStatusId,
+          projectId: validProjectIds.has(rest.projectId) ? rest.projectId : fallbackProjectId,
+        }));
     } else {
       const mergedList: TaskItem[] = [];
+      const consumedCloudIds = new Set<string>();
+
       for (const seedTask of INITIAL_WORKSPACE_STATE.tasks) {
-        const override = cloudMap.get(seedTask.id);
-        if (override) {
-          if (!override.deleted) {
-            const { deleted: _deleted, ...rest } = override;
-            mergedList.push(rest);
+        const directOverride = cloudMap.get(seedTask.id);
+        let matchedOverride: (TaskItem & { deleted: boolean }) | undefined;
+
+        if (directOverride && areCandidatesSamePerson(directOverride, seedTask)) {
+          matchedOverride = directOverride;
+        } else {
+          // Index shifted from older seed snapshot: find matching override by candidate identity
+          for (const candidate of cloudCandidates) {
+            if (consumedCloudIds.has(candidate.id)) continue;
+            if (areCandidatesSamePerson(candidate, seedTask)) {
+              matchedOverride = candidate;
+              if (candidate.id !== seedTask.id) {
+                cleanupPlan.docIdsToDelete.push(candidate.id);
+              }
+              break;
+            }
           }
-          cloudMap.delete(seedTask.id);
+          if (directOverride && !areCandidatesSamePerson(directOverride, seedTask)) {
+            // Stale index-shifted cloud doc from prior seed; remove old doc id so new seed appears cleanly
+            cleanupPlan.docIdsToDelete.push(directOverride.id);
+          }
+        }
+
+        if (matchedOverride) {
+          consumedCloudIds.add(matchedOverride.id);
+          if (!matchedOverride.deleted) {
+            const { deleted: _deleted, ...rest } = matchedOverride;
+            const syncedTask: TaskItem = {
+              ...seedTask,
+              statusId: validStatusIds.has(rest.statusId) ? rest.statusId : fallbackStatusId,
+              projectId: validProjectIds.has(rest.projectId) ? rest.projectId : fallbackProjectId,
+              order: rest.order,
+              priority: rest.priority,
+              assigneeId: rest.assigneeId,
+              statusHistory: rest.statusHistory,
+              updatedAt: rest.updatedAt,
+              fullName: rest.fullName || seedTask.fullName,
+              email: rest.email || seedTask.email,
+              contactNo: rest.contactNo || seedTask.contactNo,
+              portfolioUrl: rest.portfolioUrl || seedTask.portfolioUrl,
+              currentLocation: rest.currentLocation || seedTask.currentLocation,
+              yearsOfExperience: rest.yearsOfExperience || seedTask.yearsOfExperience,
+              designedAiProduct: rest.designedAiProduct || seedTask.designedAiProduct,
+              noticePeriod: rest.noticePeriod || seedTask.noticePeriod,
+              resumeUrl: rest.resumeUrl || seedTask.resumeUrl,
+              message: rest.message || seedTask.message,
+              expectedSalary: rest.expectedSalary || seedTask.expectedSalary,
+              readyToRelocateIn: rest.readyToRelocateIn || seedTask.readyToRelocateIn,
+            };
+            mergedList.push(syncedTask);
+            if (matchedOverride.id !== seedTask.id) {
+              cleanupPlan.tasksToUpdate.push(syncedTask);
+            }
+          } else if (matchedOverride.id !== seedTask.id) {
+            cleanupPlan.tasksToSoftDelete.push(seedTask);
+          }
         } else {
           mergedList.push({
             ...seedTask,
@@ -292,25 +492,56 @@ export function subscribeToUserWorkspace(
           });
         }
       }
-      for (const remaining of cloudMap.values()) {
+
+      for (const remaining of cloudCandidates) {
+        if (consumedCloudIds.has(remaining.id)) continue;
+        if (seedTaskIdSet.has(remaining.id)) continue;
         if (!remaining.deleted) {
           const { deleted: _deleted, ...rest } = remaining;
-          mergedList.push(rest);
+          mergedList.push({
+            ...rest,
+            statusId: validStatusIds.has(rest.statusId) ? rest.statusId : fallbackStatusId,
+            projectId: validProjectIds.has(rest.projectId) ? rest.projectId : fallbackProjectId,
+          });
         }
       }
-      mergedTasks = mergedList;
+      rawTasks = mergedList;
+    }
+
+    const dedup = deduplicateTaskList(rawTasks);
+    if (dedup.removedCount > 0) {
+      for (const dup of dedup.removedDuplicates) {
+        if (cloudIds.has(dup.id)) {
+          if (!workspaceMeta.seedReplaced && seedTaskIdSet.has(dup.id)) {
+            cleanupPlan.tasksToSoftDelete.push(dup);
+          } else {
+            cleanupPlan.docIdsToDelete.push(dup.id);
+          }
+        }
+      }
+      for (const survivor of dedup.updatedSurvivors) {
+        if (cloudIds.has(survivor.id) || workspaceMeta.seedReplaced) {
+          cleanupPlan.tasksToUpdate.push(survivor);
+        }
+      }
     }
 
     onSync({
       workspace: {
         workspaceName: workspaceMeta.workspaceName,
-        nextCodeNumber: workspaceMeta.nextCodeNumber,
+        nextCodeNumber: Math.max(
+          workspaceMeta.nextCodeNumber,
+          INITIAL_WORKSPACE_STATE.nextCodeNumber
+        ),
         statuses: sortedStatuses,
         projects: activeProjects,
-        tasks: mergedTasks,
+        tasks: dedup.uniqueTasks,
       },
       cloudCandidateIds: cloudIds,
       seedReplaced: workspaceMeta.seedReplaced,
+      cloudNextCodeNumber: workspaceMeta.nextCodeNumber,
+      rawDuplicateCount: dedup.removedCount,
+      cloudCleanupPlan: cleanupPlan,
     });
   };
 
@@ -455,33 +686,33 @@ export async function saveTaskMoveToCloud(
   reorderedSiblings: TaskItem[],
   cloudIds: Set<string>
 ): Promise<void> {
+  const refs = await resolveValidFirestoreRefs(uid);
   const allToSync = [movedTask, ...reorderedSiblings.filter((t) => t.id !== movedTask.id)];
-  const chunks: TaskItem[][] = [];
-  for (let i = 0; i < allToSync.length; i += 350) {
-    chunks.push(allToSync.slice(i, i + 350));
+  const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+
+  for (const item of allToSync) {
+    const normalized = normalizeTaskForFirestore(item, refs);
+    const ref = doc(db, 'users', uid, 'candidates', normalized.id);
+    if (cloudIds.has(normalized.id)) {
+      ops.push((batch) =>
+        batch.update(ref, {
+          statusId: normalized.statusId,
+          order: sanitizeOrder(normalized.order),
+          statusHistory: sanitizeHistory(normalized.statusHistory),
+          updatedAt: serverTimestamp(),
+        })
+      );
+    } else {
+      ops.push((batch) => batch.set(ref, toCandidatePayload(uid, normalized, false, true)));
+    }
   }
 
-  for (const chunk of chunks) {
-    const batch = writeBatch(db);
-    for (const item of chunk) {
-      const ref = doc(db, 'users', uid, 'candidates', item.id);
-      if (cloudIds.has(item.id)) {
-        batch.update(ref, {
-          statusId: sanitizeId(item.statusId, 'status'),
-          order: Math.max(0, Math.min(100000, Math.floor(item.order))),
-          statusHistory: (item.statusHistory ?? []).slice(0, LIMITS.historyMax),
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        batch.set(ref, toCandidatePayload(uid, item, false, true));
-      }
-    }
-    try {
-      await batch.commit();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `users/${uid}/candidates`);
-    }
-  }
+  await commitBatchesInWaves(
+    ops,
+    CANDIDATE_WRITE_BATCH_SIZE,
+    OperationType.WRITE,
+    `users/${uid}/candidates`
+  );
 }
 
 export async function saveBulkMovesToCloud(
@@ -489,28 +720,32 @@ export async function saveBulkMovesToCloud(
   updatedTasks: TaskItem[],
   cloudIds: Set<string>
 ): Promise<void> {
-  for (let i = 0; i < updatedTasks.length; i += 350) {
-    const chunk = updatedTasks.slice(i, i + 350);
-    const batch = writeBatch(db);
-    for (const item of chunk) {
-      const ref = doc(db, 'users', uid, 'candidates', item.id);
-      if (cloudIds.has(item.id)) {
+  const refs = await resolveValidFirestoreRefs(uid);
+  const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+
+  for (const item of updatedTasks) {
+    const normalized = normalizeTaskForFirestore(item, refs);
+    const ref = doc(db, 'users', uid, 'candidates', normalized.id);
+    if (cloudIds.has(normalized.id)) {
+      ops.push((batch) =>
         batch.update(ref, {
-          statusId: sanitizeId(item.statusId, 'status'),
-          order: Math.max(0, Math.min(100000, Math.floor(item.order))),
-          statusHistory: (item.statusHistory ?? []).slice(0, LIMITS.historyMax),
+          statusId: normalized.statusId,
+          order: sanitizeOrder(normalized.order),
+          statusHistory: sanitizeHistory(normalized.statusHistory),
           updatedAt: serverTimestamp(),
-        });
-      } else {
-        batch.set(ref, toCandidatePayload(uid, item, false, true));
-      }
-    }
-    try {
-      await batch.commit();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `users/${uid}/candidates`);
+        })
+      );
+    } else {
+      ops.push((batch) => batch.set(ref, toCandidatePayload(uid, normalized, false, true)));
     }
   }
+
+  await commitBatchesInWaves(
+    ops,
+    CANDIDATE_WRITE_BATCH_SIZE,
+    OperationType.WRITE,
+    `users/${uid}/candidates`
+  );
 }
 
 export async function saveTaskCreateToCloud(
@@ -518,8 +753,13 @@ export async function saveTaskCreateToCloud(
   task: TaskItem,
   nextCodeNumber: number
 ): Promise<void> {
+  const refs = await resolveValidFirestoreRefs(uid);
+  const normalized = normalizeTaskForFirestore(task, refs);
   const batch = writeBatch(db);
-  batch.set(doc(db, 'users', uid, 'candidates', task.id), toCandidatePayload(uid, task, false, true));
+  batch.set(
+    doc(db, 'users', uid, 'candidates', normalized.id),
+    toCandidatePayload(uid, normalized, false, true)
+  );
   batch.update(doc(db, 'users', uid, 'workspaces', 'default'), {
     nextCodeNumber,
     updatedAt: serverTimestamp(),
@@ -527,7 +767,7 @@ export async function saveTaskCreateToCloud(
   try {
     await batch.commit();
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `users/${uid}/candidates/${task.id}`);
+    handleFirestoreError(error, OperationType.CREATE, `users/${uid}/candidates/${normalized.id}`);
   }
 }
 
@@ -536,17 +776,19 @@ export async function saveTaskUpdateToCloud(
   task: TaskItem,
   existsInCloud: boolean
 ): Promise<void> {
-  const path = `users/${uid}/candidates/${task.id}`;
-  const ref = doc(db, 'users', uid, 'candidates', task.id);
+  const refs = await resolveValidFirestoreRefs(uid);
+  const normalized = normalizeTaskForFirestore(task, refs);
+  const path = `users/${uid}/candidates/${normalized.id}`;
+  const ref = doc(db, 'users', uid, 'candidates', normalized.id);
   try {
     if (existsInCloud) {
-      const payload = toCandidatePayload(uid, task, false, false);
+      const payload = toCandidatePayload(uid, normalized, false, false);
       delete payload.ownerUid;
       delete payload.id;
       delete payload.code;
       await updateDoc(ref, payload);
     } else {
-      await setDoc(ref, toCandidatePayload(uid, task, false, true));
+      await setDoc(ref, toCandidatePayload(uid, normalized, false, true));
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
@@ -559,23 +801,210 @@ export async function saveTaskDeleteToCloud(
   isSeedTask: boolean,
   existsInCloud: boolean
 ): Promise<void> {
-  const path = `users/${uid}/candidates/${task.id}`;
-  const ref = doc(db, 'users', uid, 'candidates', task.id);
+  const safeId = sanitizeId(task.id, 'cand');
+  const path = `users/${uid}/candidates/${safeId}`;
+  const ref = doc(db, 'users', uid, 'candidates', safeId);
   try {
     if (isSeedTask) {
       if (existsInCloud) {
-        await updateDoc(ref, {
-          deleted: true,
-          updatedAt: serverTimestamp(),
-        });
+        const refs = await resolveValidFirestoreRefs(uid);
+        const normalized = normalizeTaskForFirestore(task, refs);
+        const payload = toCandidatePayload(uid, normalized, true, false);
+        delete payload.ownerUid;
+        delete payload.id;
+        delete payload.code;
+        await updateDoc(ref, payload);
       } else {
-        await setDoc(ref, toCandidatePayload(uid, task, true, true));
+        const refs = await resolveValidFirestoreRefs(uid);
+        const normalized = normalizeTaskForFirestore(task, refs);
+        await setDoc(ref, toCandidatePayload(uid, normalized, true, true));
       }
     } else if (existsInCloud) {
       await deleteDoc(ref);
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function saveDeduplicationToCloud(
+  uid: string,
+  plan: CloudCleanupPlan,
+  cloudIds: Set<string>
+): Promise<void> {
+  const protectedIds = new Set<string>([
+    ...plan.tasksToUpdate.map((t) => sanitizeId(t.id, 'cand')),
+    ...plan.tasksToSoftDelete.map((t) => sanitizeId(t.id, 'cand')),
+  ]);
+  const uniqueDeleteIds = Array.from(
+    new Set(plan.docIdsToDelete.map((id) => sanitizeId(id, 'cand')))
+  ).filter((id) => cloudIds.has(id) && !protectedIds.has(id));
+
+  const deleteOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = uniqueDeleteIds.map(
+    (docId) => (batch) => batch.delete(doc(db, 'users', uid, 'candidates', docId))
+  );
+
+  await commitBatchesInWaves(
+    deleteOps,
+    DELETE_BATCH_SIZE,
+    OperationType.DELETE,
+    `users/${uid}/candidates`
+  );
+
+  const hasWrites = plan.tasksToUpdate.length > 0 || plan.tasksToSoftDelete.length > 0;
+  if (!hasWrites) return;
+
+  const refs = await resolveValidFirestoreRefs(uid);
+  const writeOpsById = new Map<string, (batch: ReturnType<typeof writeBatch>) => void>();
+
+  for (const survivor of plan.tasksToUpdate) {
+    const normalized = normalizeTaskForFirestore(survivor, refs);
+    const ref = doc(db, 'users', uid, 'candidates', normalized.id);
+    if (cloudIds.has(normalized.id)) {
+      const payload = toCandidatePayload(uid, normalized, false, false);
+      delete payload.ownerUid;
+      delete payload.id;
+      delete payload.code;
+      writeOpsById.set(normalized.id, (batch) => batch.update(ref, payload));
+    } else {
+      writeOpsById.set(normalized.id, (batch) =>
+        batch.set(ref, toCandidatePayload(uid, normalized, false, true))
+      );
+    }
+  }
+
+  for (const softDel of plan.tasksToSoftDelete) {
+    const normalized = normalizeTaskForFirestore(softDel, refs);
+    const ref = doc(db, 'users', uid, 'candidates', normalized.id);
+    if (cloudIds.has(normalized.id)) {
+      const payload = toCandidatePayload(uid, normalized, true, false);
+      delete payload.ownerUid;
+      delete payload.id;
+      delete payload.code;
+      writeOpsById.set(normalized.id, (batch) => batch.update(ref, payload));
+    } else {
+      writeOpsById.set(normalized.id, (batch) =>
+        batch.set(ref, toCandidatePayload(uid, normalized, true, true))
+      );
+    }
+  }
+
+  await commitBatchesInWaves(
+    Array.from(writeOpsById.values()),
+    CANDIDATE_WRITE_BATCH_SIZE,
+    OperationType.WRITE,
+    `users/${uid}/candidates`
+  );
+}
+
+export async function saveSheetSyncToCloud(
+  uid: string,
+  params: {
+    tasksToInsert: TaskItem[];
+    tasksToUpdate: TaskItem[];
+    docIdsToDelete: string[];
+    tasksToSoftDelete?: TaskItem[];
+    nextCodeNumber: number;
+    currentCloudNextCodeNumber: number;
+  },
+  cloudIds: Set<string>
+): Promise<void> {
+  const softDeleteList = params.tasksToSoftDelete ?? [];
+  const protectedIds = new Set<string>([
+    ...params.tasksToInsert.map((t) => sanitizeId(t.id, 'cand')),
+    ...params.tasksToUpdate.map((t) => sanitizeId(t.id, 'cand')),
+    ...softDeleteList.map((t) => sanitizeId(t.id, 'cand')),
+  ]);
+
+  const uniqueDeleteIds = Array.from(
+    new Set(params.docIdsToDelete.map((id) => sanitizeId(id, 'cand')))
+  ).filter((id) => cloudIds.has(id) && !protectedIds.has(id));
+
+  const deleteOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = uniqueDeleteIds.map(
+    (docId) => (batch) => batch.delete(doc(db, 'users', uid, 'candidates', docId))
+  );
+
+  await commitBatchesInWaves(
+    deleteOps,
+    DELETE_BATCH_SIZE,
+    OperationType.DELETE,
+    `users/${uid}/candidates`
+  );
+
+  const hasWrites =
+    softDeleteList.length > 0 ||
+    params.tasksToUpdate.length > 0 ||
+    params.tasksToInsert.length > 0;
+
+  if (hasWrites) {
+    const refs = await resolveValidFirestoreRefs(uid);
+    const writeOpsById = new Map<string, (batch: ReturnType<typeof writeBatch>) => void>();
+
+    for (const softDel of softDeleteList) {
+      const normalized = normalizeTaskForFirestore(softDel, refs);
+      const ref = doc(db, 'users', uid, 'candidates', normalized.id);
+      if (cloudIds.has(normalized.id)) {
+        const payload = toCandidatePayload(uid, normalized, true, false);
+        delete payload.ownerUid;
+        delete payload.id;
+        delete payload.code;
+        writeOpsById.set(normalized.id, (batch) => batch.update(ref, payload));
+      } else {
+        writeOpsById.set(normalized.id, (batch) =>
+          batch.set(ref, toCandidatePayload(uid, normalized, true, true))
+        );
+      }
+    }
+
+    for (const updated of params.tasksToUpdate) {
+      const normalized = normalizeTaskForFirestore(updated, refs);
+      const ref = doc(db, 'users', uid, 'candidates', normalized.id);
+      if (cloudIds.has(normalized.id)) {
+        const payload = toCandidatePayload(uid, normalized, false, false);
+        delete payload.ownerUid;
+        delete payload.id;
+        delete payload.code;
+        writeOpsById.set(normalized.id, (batch) => batch.update(ref, payload));
+      } else {
+        writeOpsById.set(normalized.id, (batch) =>
+          batch.set(ref, toCandidatePayload(uid, normalized, false, true))
+        );
+      }
+    }
+
+    for (const inserted of params.tasksToInsert) {
+      const normalized = normalizeTaskForFirestore(inserted, refs);
+      const ref = doc(db, 'users', uid, 'candidates', normalized.id);
+      if (cloudIds.has(normalized.id)) {
+        const payload = toCandidatePayload(uid, normalized, false, false);
+        delete payload.ownerUid;
+        delete payload.id;
+        delete payload.code;
+        writeOpsById.set(normalized.id, (batch) => batch.update(ref, payload));
+      } else {
+        writeOpsById.set(normalized.id, (batch) =>
+          batch.set(ref, toCandidatePayload(uid, normalized, false, true))
+        );
+      }
+    }
+
+    await commitBatchesInWaves(
+      Array.from(writeOpsById.values()),
+      CANDIDATE_WRITE_BATCH_SIZE,
+      OperationType.WRITE,
+      `users/${uid}/candidates`
+    );
+  }
+
+  if (params.nextCodeNumber > params.currentCloudNextCodeNumber) {
+    try {
+      await updateDoc(doc(db, 'users', uid, 'workspaces', 'default'), {
+        nextCodeNumber: params.nextCodeNumber,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}/workspaces/default`);
+    }
   }
 }
 
@@ -707,60 +1136,95 @@ export async function saveImportToCloud(
     nextCodeNumber: number;
   }
 ): Promise<void> {
-  // Commit statuses, projects, and workspace metadata first so existsAfter/exists checks succeed
-  const metaBatch = writeBatch(db);
-  for (const s of params.allStatuses) {
-    const ref = doc(db, 'users', uid, 'statuses', s.id);
-    if (params.newStatuses.some((ns) => ns.id === s.id)) {
-      metaBatch.set(ref, toStatusPayload(uid, s, true));
-    } else {
-      metaBatch.update(ref, {
-        order: Math.max(0, Math.min(1000, Math.floor(s.order))),
-        updatedAt: serverTimestamp(),
-      });
+  // Commit new/reordered statuses and new projects first so existsAfter/exists checks on candidates succeed
+  const hasStatusOrProjectWrites =
+    params.allStatuses.length > 0 || params.newProjects.length > 0;
+  if (hasStatusOrProjectWrites) {
+    const newStatusIds = new Set(params.newStatuses.map((ns) => sanitizeId(ns.id, 'status')));
+    const schemaOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+    for (const s of params.allStatuses) {
+      const sid = sanitizeId(s.id, 'status');
+      const ref = doc(db, 'users', uid, 'statuses', sid);
+      if (newStatusIds.has(sid)) {
+        schemaOps.push((batch) => batch.set(ref, toStatusPayload(uid, s, true)));
+      } else {
+        schemaOps.push((batch) =>
+          batch.update(ref, {
+            order: Math.max(0, Math.min(1000, Math.floor(Number.isFinite(s.order) ? s.order : 0))),
+            updatedAt: serverTimestamp(),
+          })
+        );
+      }
     }
-  }
-  for (const p of params.newProjects) {
-    metaBatch.set(doc(db, 'users', uid, 'projects', p.id), toProjectPayload(uid, p, true));
-  }
-  metaBatch.update(doc(db, 'users', uid, 'workspaces', 'default'), {
-    nextCodeNumber: params.nextCodeNumber,
-    seedReplaced: params.mode === 'replace',
-    updatedAt: serverTimestamp(),
-  });
-
-  try {
-    await metaBatch.commit();
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `users/${uid}/workspaces/default`);
+    for (const p of params.newProjects) {
+      const pid = sanitizeId(p.id, 'proj');
+      schemaOps.push((batch) =>
+        batch.set(doc(db, 'users', uid, 'projects', pid), toProjectPayload(uid, p, true))
+      );
+    }
+    await commitBatchesInWaves(
+      schemaOps,
+      DELETE_BATCH_SIZE,
+      OperationType.WRITE,
+      `users/${uid}/statuses`
+    );
   }
 
+  let existingCandidateIds = new Set<string>();
   if (params.mode === 'replace') {
     const existingSnap = await getDocs(
       query(collection(db, 'users', uid, 'candidates'), where('ownerUid', '==', uid))
     );
-    for (let i = 0; i < existingSnap.docs.length; i += 350) {
-      const delBatch = writeBatch(db);
-      existingSnap.docs.slice(i, i + 350).forEach((d) => delBatch.delete(d.ref));
-      try {
-        await delBatch.commit();
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `users/${uid}/candidates`);
-      }
-    }
+    const deleteOps: Array<(batch: ReturnType<typeof writeBatch>) => void> =
+      existingSnap.docs.map((d) => (batch) => batch.delete(d.ref));
+    await commitBatchesInWaves(
+      deleteOps,
+      DELETE_BATCH_SIZE,
+      OperationType.DELETE,
+      `users/${uid}/candidates`
+    );
+  } else if (params.importedTasks.length > 0) {
+    const existingSnap = await getDocs(
+      query(collection(db, 'users', uid, 'candidates'), where('ownerUid', '==', uid))
+    );
+    existingCandidateIds = new Set(existingSnap.docs.map((d) => d.id));
   }
 
-  for (let i = 0; i < params.importedTasks.length; i += 350) {
-    const chunk = params.importedTasks.slice(i, i + 350);
-    const batch = writeBatch(db);
-    for (const t of chunk) {
-      batch.set(doc(db, 'users', uid, 'candidates', t.id), toCandidatePayload(uid, t, false, true));
+  if (params.importedTasks.length > 0) {
+    const refs = await resolveValidFirestoreRefs(uid);
+    const writeOpsById = new Map<string, (batch: ReturnType<typeof writeBatch>) => void>();
+    for (const t of params.importedTasks) {
+      const normalized = normalizeTaskForFirestore(t, refs);
+      const ref = doc(db, 'users', uid, 'candidates', normalized.id);
+      if (existingCandidateIds.has(normalized.id)) {
+        const payload = toCandidatePayload(uid, normalized, false, false);
+        delete payload.ownerUid;
+        delete payload.id;
+        delete payload.code;
+        writeOpsById.set(normalized.id, (batch) => batch.update(ref, payload));
+      } else {
+        writeOpsById.set(normalized.id, (batch) =>
+          batch.set(ref, toCandidatePayload(uid, normalized, false, true))
+        );
+      }
     }
-    try {
-      await batch.commit();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `users/${uid}/candidates`);
-    }
+    await commitBatchesInWaves(
+      Array.from(writeOpsById.values()),
+      CANDIDATE_WRITE_BATCH_SIZE,
+      OperationType.CREATE,
+      `users/${uid}/candidates`
+    );
+  }
+
+  // Update workspace metadata after all candidate documents are committed
+  try {
+    await updateDoc(doc(db, 'users', uid, 'workspaces', 'default'), {
+      nextCodeNumber: params.nextCodeNumber,
+      seedReplaced: params.mode === 'replace',
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${uid}/workspaces/default`);
   }
 }
 
@@ -771,26 +1235,41 @@ export async function resetWorkspaceInCloud(uid: string): Promise<void> {
       const snap = await getDocs(
         query(collection(db, 'users', uid, colName), where('ownerUid', '==', uid))
       );
-      for (let i = 0; i < snap.docs.length; i += 350) {
-        const batch = writeBatch(db);
-        snap.docs.slice(i, i + 350).forEach((d) => batch.delete(d.ref));
-        await batch.commit();
-      }
+      const deleteOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = snap.docs.map(
+        (d) => (batch) => batch.delete(d.ref)
+      );
+      await commitBatchesInWaves(
+        deleteOps,
+        DELETE_BATCH_SIZE,
+        OperationType.DELETE,
+        `users/${uid}/${colName}`
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `users/${uid}/${colName}`);
     }
   }
 
+  const workspaceRef = doc(db, 'users', uid, 'workspaces', 'default');
   try {
+    const wsSnap = await getDoc(workspaceRef);
     const batch = writeBatch(db);
-    batch.set(doc(db, 'users', uid, 'workspaces', 'default'), {
-      ownerUid: uid,
-      workspaceName: clamp(INITIAL_WORKSPACE_STATE.workspaceName, LIMITS.workspaceName),
-      nextCodeNumber: INITIAL_WORKSPACE_STATE.nextCodeNumber,
-      seedReplaced: false,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    if (wsSnap.exists()) {
+      batch.update(workspaceRef, {
+        workspaceName: clamp(INITIAL_WORKSPACE_STATE.workspaceName, LIMITS.workspaceName),
+        nextCodeNumber: INITIAL_WORKSPACE_STATE.nextCodeNumber,
+        seedReplaced: false,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.set(workspaceRef, {
+        ownerUid: uid,
+        workspaceName: clamp(INITIAL_WORKSPACE_STATE.workspaceName, LIMITS.workspaceName),
+        nextCodeNumber: INITIAL_WORKSPACE_STATE.nextCodeNumber,
+        seedReplaced: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
     for (const s of INITIAL_WORKSPACE_STATE.statuses) {
       batch.set(doc(db, 'users', uid, 'statuses', s.id), toStatusPayload(uid, s, true));
     }
@@ -924,15 +1403,17 @@ export async function ingestLeadSubmissionsToCloud(
   submissionIds: string[],
   nextCodeNumber: number
 ): Promise<void> {
-  const chunkSize = 100;
-  for (let i = 0; i < tasks.length; i += chunkSize) {
-    const taskChunk = tasks.slice(i, i + chunkSize);
-    const idChunk = submissionIds.slice(i, i + chunkSize);
-    const isLastChunk = i + chunkSize >= tasks.length;
+  if (tasks.length === 0) return;
+  const refs = await resolveValidFirestoreRefs(uid);
+
+  for (let i = 0; i < tasks.length; i += LEAD_INGEST_BATCH_SIZE) {
+    const taskChunk = tasks.slice(i, i + LEAD_INGEST_BATCH_SIZE);
+    const idChunk = submissionIds.slice(i, i + LEAD_INGEST_BATCH_SIZE);
 
     const batch = writeBatch(db);
-    for (const t of taskChunk) {
-      const candidateId = sanitizeId(t.id, 'cand');
+    for (const rawTask of taskChunk) {
+      const t = normalizeTaskForFirestore(rawTask, refs);
+      const candidateId = t.id;
       batch.set(
         doc(db, 'users', uid, 'candidates', candidateId),
         toCandidatePayload(uid, t, false, true)
@@ -973,17 +1454,20 @@ export async function ingestLeadSubmissionsToCloud(
     for (const subId of idChunk) {
       batch.delete(doc(db, 'users', uid, 'leadSubmissions', subId));
     }
-    if (isLastChunk) {
-      batch.update(doc(db, 'users', uid, 'workspaces', 'default'), {
-        nextCodeNumber,
-        updatedAt: serverTimestamp(),
-      });
-    }
     try {
       await batch.commit();
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `users/${uid}/leadSubmissions`);
     }
+  }
+
+  try {
+    await updateDoc(doc(db, 'users', uid, 'workspaces', 'default'), {
+      nextCodeNumber,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${uid}/workspaces/default`);
   }
 }
 

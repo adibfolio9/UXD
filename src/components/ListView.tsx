@@ -4,6 +4,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   Check,
+  CheckCheck,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -12,6 +13,7 @@ import {
   FileText,
   Filter,
   Plus,
+  RefreshCw,
   Search,
   X,
 } from 'lucide-react';
@@ -21,6 +23,7 @@ import {
   StatusDefinition,
   TaskItem,
 } from '../types';
+import { parseCandidateTimestampMs } from '../utils/deduplicateCandidates';
 import {
   PRIORITY_LABELS,
   isExternalUrlValue,
@@ -43,7 +46,9 @@ interface ListViewProps {
   onSelectTask: (taskId: string) => void;
   onOpenNewItem: () => void;
   onOpenImportSheet: () => void;
+  onSyncLatestSheet: () => void;
   onExportExcel: () => void;
+  onRemoveDuplicates: () => void;
 }
 
 type SortKey = 'timestamp' | 'fullName' | 'yearsOfExperience' | 'expectedSalary' | 'status';
@@ -61,7 +66,9 @@ export function ListView({
   onSelectTask,
   onOpenNewItem,
   onOpenImportSheet,
+  onSyncLatestSheet,
   onExportExcel,
+  onRemoveDuplicates,
 }: ListViewProps) {
   const sortedStatuses = useMemo(
     () => [...statuses].sort((a, b) => a.order - b.order),
@@ -88,8 +95,8 @@ export function ListView({
   const [bulkTargetStatusId, setBulkTargetStatusId] = useState<string>(
     sortedStatuses[0]?.id ?? ''
   );
-  const [sortKey, setSortKey] = useState<SortKey | null>(null);
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [sortKey, setSortKey] = useState<SortKey | null>('timestamp');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [pageSize, setPageSize] = useState<number>(50);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [resumePreviewTask, setResumePreviewTask] = useState<TaskItem | null>(null);
@@ -215,6 +222,10 @@ export function ListView({
     let cmp = 0;
     if (key === 'status') {
       cmp = (statusOrderMap.get(a.statusId) ?? 0) - (statusOrderMap.get(b.statusId) ?? 0);
+    } else if (key === 'timestamp') {
+      cmp =
+        parseCandidateTimestampMs(a.timestamp, a.updatedAt) -
+        parseCandidateTimestampMs(b.timestamp, b.updatedAt);
     } else if (key === 'yearsOfExperience') {
       const numA = parseFloat(a.yearsOfExperience) || 0;
       const numB = parseFloat(b.yearsOfExperience) || 0;
@@ -243,6 +254,8 @@ export function ListView({
 
     if (sortKey) {
       copy.sort((a, b) => compareTasks(a, b, sortKey, sortDir));
+    } else {
+      copy.sort((a, b) => a.order - b.order);
     }
     return copy;
   }, [filteredTasks, groupByStatus, sortKey, sortDir, statusOrderMap]);
@@ -601,7 +614,7 @@ export function ListView({
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-4">
               <button
                 type="button"
                 onClick={onOpenImportSheet}
@@ -609,6 +622,23 @@ export function ListView({
               >
                 <FileSpreadsheet className="w-3.5 h-3.5" />
                 <span>Drop or Import Excel</span>
+              </button>
+              <button
+                type="button"
+                onClick={onSyncLatestSheet}
+                className="text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Sync Form List</span>
+              </button>
+              <button
+                type="button"
+                onClick={onRemoveDuplicates}
+                disabled={tasks.length === 0}
+                className="text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] disabled:opacity-40 inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <CheckCheck className="w-3.5 h-3.5" />
+                <span>Remove Duplicates</span>
               </button>
               <button
                 type="button"

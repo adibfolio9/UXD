@@ -14,7 +14,9 @@ import {
   buildImportPayload,
   detectColumnMapping,
   downloadSampleExcelTemplate,
+  parseHtmlSheetDocument,
   parseSpreadsheetFile,
+  previewDeduplicationStats,
 } from '../utils/excelImport';
 
 interface ExcelImporterProps {
@@ -32,6 +34,8 @@ interface ExcelImporterProps {
     newProjects: Project[];
     importedTasks: TaskItem[];
     nextCodeNumber: number;
+    duplicateRowsRemoved?: number;
+    deduplicate?: boolean;
   }) => void;
   onCancel?: () => void;
 }
@@ -76,10 +80,12 @@ export function ExcelImporter({
   const [selectedSheet, setSelectedSheet] = useState<string>('');
   const [mapping, setMapping] = useState<ColumnMapping | null>(null);
   const [autoCreateStatuses, setAutoCreateStatuses] = useState(true);
+  const [deduplicateOnImport, setDeduplicateOnImport] = useState(true);
   const [fallbackStatusId, setFallbackStatusId] = useState(sortedStatuses[0]?.id ?? '');
   const [importMode, setImportMode] = useState<'append' | 'replace'>('append');
   const [targetView, setTargetView] = useState<'board' | 'list'>(defaultTargetView);
   const [isOverDropzone, setIsOverDropzone] = useState(false);
+  const [loadingAttachedSheet, setLoadingAttachedSheet] = useState(false);
   const [parseError, setParseError] = useState<string | null>(initialError);
 
   useEffect(() => {
@@ -151,6 +157,28 @@ export function ExcelImporter({
     }
   };
 
+  const handleLoadAttachedFormSheet = async () => {
+    setParseError(null);
+    setLoadingAttachedSheet(true);
+    try {
+      const res = await fetch('/assets/aistudio/Form_Responses_1_9feed92b.html');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const htmlText = await res.text();
+      const parsed = parseHtmlSheetDocument(htmlText, 'Form Responses 1.html');
+      const firstSheet = parsed.sheetNames[0] ?? '';
+      const firstHeaders = parsed.sheets[firstSheet]?.headers ?? [];
+      setWorkbook(parsed);
+      setSelectedSheet(firstSheet);
+      setMapping(detectColumnMapping(firstHeaders));
+    } catch {
+      setParseError(
+        'Could not load the Form Responses 1 sheet. Please drop the .html or .xlsx file directly above.'
+      );
+    } finally {
+      setLoadingAttachedSheet(false);
+    }
+  };
+
   const handleSheetChange = (sheetName: string) => {
     if (!activeWorkbook) return;
     setSelectedSheet(sheetName);
@@ -167,6 +195,7 @@ export function ExcelImporter({
       existingProjects: projects,
       members,
       autoCreateStatuses,
+      deduplicate: deduplicateOnImport,
       fallbackStatusId: resolvedFallbackStatusId,
       fallbackProjectId: projects[0]?.id ?? 'proj-lead-staff',
       startingCodeNumber: nextCodeNumber,
@@ -175,20 +204,24 @@ export function ExcelImporter({
     onConfirmImport({
       targetView: chosenView,
       mode: importMode,
+      deduplicate: deduplicateOnImport,
       ...result,
     });
     setWorkbook(null);
     setMapping(null);
   };
 
-  const validRowCount =
-    activeSheet && activeMapping?.fullName
-      ? activeSheet.rows.filter(
-          (r) =>
-            (r[activeMapping.fullName] ?? '').trim() !== '' ||
-            (activeMapping.email ? (r[activeMapping.email] ?? '').trim() !== '' : false)
-        ).length
-      : 0;
+  const importStats = useMemo(() => {
+    if (!activeSheet || !activeMapping?.fullName) {
+      return { validCount: 0, uniqueCount: 0, duplicateCount: 0 };
+    }
+    return previewDeduplicationStats(activeSheet.rows, activeMapping);
+  }, [activeSheet, activeMapping]);
+
+  const validRowCount = importStats.validCount;
+  const effectiveUploadCount = deduplicateOnImport
+    ? importStats.uniqueCount
+    : importStats.validCount;
 
   return (
     <div className="space-y-6">
@@ -240,6 +273,29 @@ export function ExcelImporter({
             />
           </div>
 
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl border border-[#0071E3]/20 dark:border-[#0A84FF]/25 bg-[#0071E3]/[0.04] dark:bg-[#0A84FF]/[0.08]">
+            <div className="flex items-start gap-3">
+              <FileSpreadsheet className="w-5 h-5 text-[#0071E3] dark:text-[#2997FF] mt-0.5 shrink-0" />
+              <div>
+                <div className="text-xs font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                  Uploaded Form Responses 1 Sheet (.html)
+                </div>
+                <div className="text-xs text-[#6E6E73] dark:text-[#A1A1A6]">
+                  Load the latest 744 responses directly, auto-remove duplicates, and sync all 589 unique candidates.
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={loadingAttachedSheet}
+              onClick={() => void handleLoadAttachedFormSheet()}
+              className="h-9 px-3.5 rounded-[10px] bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] disabled:opacity-50 text-xs font-medium text-white inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>{loadingAttachedSheet ? 'Loading Sheet...' : 'Load Candidate Name List'}</span>
+            </button>
+          </div>
+
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl border border-black/[0.08] dark:border-white/[0.10] bg-white dark:bg-[#1C1C1E]">
             <div className="flex items-start gap-3">
               <FileSpreadsheet className="w-5 h-5 text-[#0071E3] dark:text-[#2997FF] mt-0.5 shrink-0" />
@@ -271,7 +327,11 @@ export function ExcelImporter({
                 {activeWorkbook.fileName}
               </div>
               <div className="text-xs text-[#6E6E73] dark:text-[#A1A1A6] font-mono tabular-nums">
-                {activeSheet?.rows.length ?? 0} rows detected · {activeSheet?.headers.length ?? 0} columns
+                {activeSheet?.rows.length ?? 0} rows detected ·{' '}
+                {importStats.duplicateCount > 0
+                  ? `${importStats.uniqueCount} unique (${importStats.duplicateCount} duplicates found)`
+                  : `${importStats.validCount} valid candidates`}{' '}
+                · {activeSheet?.headers.length ?? 0} columns
               </div>
             </div>
 
@@ -424,9 +484,24 @@ export function ExcelImporter({
                   ))}
                 </select>
               </div>
-              <p className="text-xs text-[#86868B]">
-                All 13 columns populate both List / Table View and Kanban Board simultaneously.
-              </p>
+              <label className="flex items-start gap-2.5 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={deduplicateOnImport}
+                  onChange={(e) => setDeduplicateOnImport(e.target.checked)}
+                  className="mt-0.5 rounded border-black/20 dark:border-white/25 text-[#0071E3] focus:ring-[#0071E3]"
+                />
+                <span className="text-xs text-[#6E6E73] dark:text-[#A1A1A6] leading-relaxed">
+                  <span className="font-semibold block text-[#1D1D1F] dark:text-[#F5F5F7]">
+                    Remove duplicate candidates automatically
+                  </span>
+                  {importStats.duplicateCount > 0
+                    ? deduplicateOnImport
+                      ? `Merging ${importStats.duplicateCount} duplicate submissions so only ${importStats.uniqueCount} unique candidates are uploaded.`
+                      : `Disabled: all ${importStats.validCount} raw sheet rows (including ${importStats.duplicateCount} duplicates) will be kept.`
+                    : 'Matches candidates by email, phone number, or name + portfolio URL.'}
+                </span>
+              </label>
             </div>
           </div>
 
@@ -438,7 +513,9 @@ export function ExcelImporter({
                   Preview (first {Math.min(5, activeSheet.rows.length)} rows)
                 </span>
                 <span className="font-mono tabular-nums">
-                  {validRowCount} rows ready
+                  {deduplicateOnImport && importStats.duplicateCount > 0
+                    ? `${importStats.uniqueCount} unique of ${validRowCount} rows`
+                    : `${validRowCount} rows ready`}
                 </span>
               </div>
               <div className="rounded-xl border border-black/[0.08] dark:border-white/[0.10] overflow-x-auto bg-white dark:bg-[#1C1C1E]">
@@ -507,11 +584,13 @@ export function ExcelImporter({
             )}
             <button
               type="button"
-              disabled={validRowCount === 0}
+              disabled={effectiveUploadCount === 0}
               onClick={() => handleImport(targetView)}
               className="h-10 px-5 rounded-[10px] bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] disabled:opacity-40 disabled:pointer-events-none text-white text-sm font-medium transition-colors whitespace-nowrap"
             >
-              Fetch {validRowCount} Rows into{' '}
+              {deduplicateOnImport && importStats.duplicateCount > 0
+                ? `Upload ${effectiveUploadCount} Unique Candidates to `
+                : `Fetch ${effectiveUploadCount} Rows into `}
               {targetView === 'board' ? 'Kanban Board' : 'List View'}
             </button>
           </div>
