@@ -7,13 +7,14 @@ import { DashboardView } from './components/DashboardView';
 import { ImportExcelView } from './components/ImportExcelView';
 import { ImportSheetModal } from './components/ImportSheetModal';
 import { ItemDrawer } from './components/ItemDrawer';
+import { LandingPage } from './components/LandingPage';
 import {
   LeadFormView,
   inferPriorityFromLead,
   inferTrackFromExperience,
 } from './components/LeadFormView';
 import { ListView } from './components/ListView';
-import { LoginScreen } from './components/LoginScreen';
+import { AuthMode, LoginScreen } from './components/LoginScreen';
 import { NewItemModal } from './components/NewItemModal';
 import { NewLeadToast } from './components/NewLeadToast';
 import { NewStatusModal } from './components/NewStatusModal';
@@ -93,6 +94,8 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [verificationTick, setVerificationTick] = useState(0);
+  const [showAuthScreen, setShowAuthScreen] = useState(false);
+  const [authInitialMode, setAuthInitialMode] = useState<AuthMode>('signup');
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [fatalSyncError, setFatalSyncError] = useState<Error | null>(null);
 
@@ -719,11 +722,44 @@ export default function App() {
     );
   }
 
-  if (!currentUser || !currentUser.emailVerified) {
+  if (!currentUser) {
+    if (!showAuthScreen) {
+      return (
+        <LandingPage
+          isDark={isDark}
+          onToggleTheme={() => setIsDark((prev) => !prev)}
+          onOpenSignUp={() => {
+            setAuthInitialMode('signup');
+            setShowAuthScreen(true);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          onOpenSignIn={() => {
+            setAuthInitialMode('signin');
+            setShowAuthScreen(true);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+        />
+      );
+    }
+
     return (
       <LoginScreen
-        unverifiedUser={currentUser && !currentUser.emailVerified ? currentUser : null}
+        unverifiedUser={null}
         isDark={isDark}
+        initialMode={authInitialMode}
+        onBackToLanding={() => setShowAuthScreen(false)}
+        onToggleTheme={() => setIsDark((prev) => !prev)}
+        onRefreshVerification={handleRefreshVerification}
+      />
+    );
+  }
+
+  if (!currentUser.emailVerified) {
+    return (
+      <LoginScreen
+        unverifiedUser={currentUser}
+        isDark={isDark}
+        initialMode={authInitialMode}
         onToggleTheme={() => setIsDark((prev) => !prev)}
         onRefreshVerification={handleRefreshVerification}
       />
@@ -1637,7 +1673,10 @@ export default function App() {
         onToggleTheme={() => setIsDark((prev) => !prev)}
         userDisplayName={currentUser.displayName || ''}
         userEmail={currentUser.email || ''}
-        onSignOut={() => void signOut(auth)}
+        onSignOut={() => {
+          setShowAuthScreen(false);
+          void signOut(auth);
+        }}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
       />

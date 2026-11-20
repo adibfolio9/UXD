@@ -1369,7 +1369,7 @@ export function subscribeToIncomingLeadSubmissions(
       const items: PendingLeadSubmission[] = snap.docs.map((d) => {
         const data = d.data();
         return {
-          id: String(data.id ?? d.id),
+          id: d.id,
           fullName: String(data.fullName ?? ''),
           email: String(data.email ?? ''),
           contactNo: String(data.contactNo ?? ''),
@@ -1405,21 +1405,39 @@ export async function ingestLeadSubmissionsToCloud(
 ): Promise<void> {
   if (tasks.length === 0) return;
   const refs = await resolveValidFirestoreRefs(uid);
+  const normalizedTasks = tasks.map((rawTask) => normalizeTaskForFirestore(rawTask, refs));
 
-  for (let i = 0; i < tasks.length; i += LEAD_INGEST_BATCH_SIZE) {
-    const taskChunk = tasks.slice(i, i + LEAD_INGEST_BATCH_SIZE);
-    const idChunk = submissionIds.slice(i, i + LEAD_INGEST_BATCH_SIZE);
+  const candidateOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+  const notifAndDeleteOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
 
-    const batch = writeBatch(db);
-    for (const rawTask of taskChunk) {
-      const t = normalizeTaskForFirestore(rawTask, refs);
-      const candidateId = t.id;
-      batch.set(
-        doc(db, 'users', uid, 'candidates', candidateId),
-        toCandidatePayload(uid, t, false, true)
+  for (let i = 0; i < normalizedTasks.length; i += 1) {
+    const t = normalizedTasks[i];
+    const subId = submissionIds[i];
+    const candidateId = t.id;
+    const candRef = doc(db, 'users', uid, 'candidates', candidateId);
+    const notifId = sanitizeId(`notif-${candidateId}`, 'notif');
+    const notifRef = doc(db, 'users', uid, 'notifications', notifId);
+
+    const [candSnap, notifSnap] = await Promise.all([getDoc(candRef), getDoc(notifRef)]);
+
+    if (candSnap.exists()) {
+      const payload = toCandidatePayload(uid, t, false, false);
+      delete payload.ownerUid;
+      delete payload.id;
+      delete payload.code;
+      candidateOps.push((batch) => batch.update(candRef, payload));
+    } else {
+      candidateOps.push((batch) => batch.set(candRef, toCandidatePayload(uid, t, false, true)));
+    }
+
+    if (notifSnap.exists()) {
+      notifAndDeleteOps.push((batch) =>
+        batch.update(notifRef, {
+          read: false,
+          updatedAt: serverTimestamp(),
+        })
       );
-
-      const notifId = sanitizeId(`notif-${candidateId}`, 'notif');
+    } else {
       const safeName = clamp(t.fullName.trim() || 'New Candidate', LIMITS.fullName);
       const safeExp = clamp(t.yearsOfExperience, LIMITS.experience);
       const safeAi = clamp(t.designedAiProduct, LIMITS.aiProduct);
@@ -1429,41 +1447,67 @@ export async function ingestLeadSubmissionsToCloud(
         safeAi ? `AI: ${safeAi}` : null,
       ].filter(Boolean);
 
-      batch.set(doc(db, 'users', uid, 'notifications', notifId), {
-        ownerUid: uid,
-        id: notifId,
-        type: 'new_lead',
-        candidateId,
-        candidateCode: clamp(t.code || 'CND-101', LIMITS.code),
-        candidateName: safeName,
-        candidateEmail: clamp(t.email, LIMITS.email),
-        experience: safeExp,
-        designedAiProduct: safeAi,
-        title: clamp('New Lead Application', 140),
-        message: clamp(
-          summaryParts.length > 0
-            ? `${safeName} (${summaryParts.join(' · ')}) submitted via Lead Intake Form.`
-            : `${safeName} submitted an application via Lead Intake Form.`,
-          400
-        ),
-        read: false,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      notifAndDeleteOps.push((batch) =>
+        batch.set(notifRef, {
+          ownerUid: uid,
+          id: notifId,
+          type: 'new_lead',
+          candidateId,
+          candidateCode: clamp(t.code || 'CND-101', LIMITS.code),
+          candidateName: safeName,
+          candidateEmail: clamp(t.email, LIMITS.email),
+          experience: safeExp,
+          designedAiProduct: safeAi,
+          title: clamp('New Lead Application', 140),
+          message: clamp(
+            summaryParts.length > 0
+              ? `${safeName} (${summaryParts.join(' · ')}) submitted via Lead Intake Form.`
+              : `${safeName} submitted an application via Lead Intake Form.`,
+            400
+          ),
+          read: false,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+      );
     }
-    for (const subId of idChunk) {
-      batch.delete(doc(db, 'users', uid, 'leadSubmissions', subId));
-    }
-    try {
-      await batch.commit();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `users/${uid}/leadSubmissions`);
+
+    if (subId && VALID_ID_RE.test(subId)) {
+      notifAndDeleteOps.push((batch) =>
+        batch.delete(doc(db, 'users', uid, 'leadSubmissions', subId))
+      );
     }
   }
 
+  // Phase 1: Commit candidate docs first so notifications' existsAfter(candidates/...) is unconditionally satisfied
+  await commitBatchesInWaves(
+    candidateOps,
+    CANDIDATE_WRITE_BATCH_SIZE,
+    OperationType.WRITE,
+    `users/${uid}/candidates`
+  );
+
+  // Phase 2: Commit notifications and delete consumed leadSubmissions
+  await commitBatchesInWaves(
+    notifAndDeleteOps,
+    LEAD_INGEST_BATCH_SIZE * 2,
+    OperationType.WRITE,
+    `users/${uid}/notifications`
+  );
+
+  // Phase 3: Advance workspace nextCodeNumber
+  const safeNextCode = Math.max(
+    1,
+    Math.min(
+      10000000,
+      Math.floor(
+        Number.isFinite(nextCodeNumber) ? nextCodeNumber : INITIAL_WORKSPACE_STATE.nextCodeNumber
+      )
+    )
+  );
   try {
     await updateDoc(doc(db, 'users', uid, 'workspaces', 'default'), {
-      nextCodeNumber,
+      nextCodeNumber: safeNextCode,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {

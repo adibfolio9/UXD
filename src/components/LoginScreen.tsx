@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   User,
   createUserWithEmailAndPassword,
@@ -11,6 +11,7 @@ import {
 } from 'firebase/auth';
 import {
   AlertCircle,
+  ArrowLeft,
   CheckCircle2,
   Eye,
   EyeOff,
@@ -23,14 +24,16 @@ import {
 } from 'lucide-react';
 import { FIREBASE_PROJECT_ID, auth, googleProvider } from '../firebase';
 
+export type AuthMode = 'signin' | 'signup' | 'reset';
+
 interface LoginScreenProps {
   unverifiedUser: User | null;
   isDark: boolean;
+  initialMode?: AuthMode;
+  onBackToLanding?: () => void;
   onToggleTheme: () => void;
   onRefreshVerification: () => Promise<boolean>;
 }
-
-type AuthMode = 'signin' | 'signup' | 'reset';
 
 function mapAuthError(code: string): string {
   switch (code) {
@@ -68,10 +71,12 @@ function mapAuthError(code: string): string {
 export function LoginScreen({
   unverifiedUser,
   isDark,
+  initialMode = 'signin',
+  onBackToLanding,
   onToggleTheme,
   onRefreshVerification,
 }: LoginScreenProps) {
-  const [mode, setMode] = useState<AuthMode>('signin');
+  const [mode, setMode] = useState<AuthMode>(initialMode);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -79,6 +84,12 @@ export function LoginScreen({
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMode(initialMode);
+    setErrorMsg(null);
+    setInfoMsg(null);
+  }, [initialMode]);
 
   const handleGoogleSignIn = async () => {
     setErrorMsg(null);
@@ -153,24 +164,37 @@ export function LoginScreen({
   return (
     <div className="min-h-screen bg-[#F5F5F7] dark:bg-black text-[#1D1D1F] dark:text-[#F5F5F7] flex flex-col justify-between p-6 relative">
       {/* Top Bar */}
-      <div className="flex items-center justify-between max-w-5xl w-full mx-auto">
-        <div className="flex items-center gap-2.5">
-          <img
-            src="/assets/aistudio/image_9e6b3606.png"
-            alt="UXD Vault official logo"
-            referrerPolicy="no-referrer"
-            className="w-9 h-9 rounded-lg object-cover bg-black shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.18)]"
-          />
-          <span className="font-display font-semibold text-base tracking-[-0.02em]">
-            UXD Vault
-          </span>
+      <div className="flex items-center justify-between max-w-5xl w-full mx-auto gap-4">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2.5">
+            <img
+              src="/assets/aistudio/image_9e6b3606.png"
+              alt="UXD Vault official logo"
+              referrerPolicy="no-referrer"
+              className="w-9 h-9 rounded-lg object-cover bg-black shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.18)]"
+            />
+            <span className="font-display font-semibold text-base tracking-[-0.02em]">
+              UXD Vault
+            </span>
+          </div>
+
+          {onBackToLanding && !unverifiedUser && (
+            <button
+              type="button"
+              onClick={onBackToLanding}
+              className="h-9 px-3 rounded-[10px] text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Overview</span>
+            </button>
+          )}
         </div>
 
         <button
           type="button"
           onClick={onToggleTheme}
           aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-          className="h-9 px-3 rounded-[10px] border border-black/[0.08] dark:border-white/[0.12] bg-white/80 dark:bg-[#1C1C1E]/80 text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] inline-flex items-center gap-1.5 transition-colors"
+          className="h-9 px-3 rounded-[10px] border border-black/[0.08] dark:border-white/[0.12] bg-white/80 dark:bg-[#1C1C1E]/80 text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] inline-flex items-center gap-1.5 transition-colors cursor-pointer"
         >
           {isDark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
           <span>{isDark ? 'Light' : 'Dark'}</span>
@@ -274,9 +298,9 @@ export function LoginScreen({
                 </h1>
                 <p className="text-xs text-[#6E6E73] dark:text-[#A1A1A6]">
                   {mode === 'signin'
-                    ? 'Access your 571 candidate records, Kanban board, and workflow statuses.'
+                    ? 'Access your 589+ candidate records, Kanban board, and workflow statuses.'
                     : mode === 'signup'
-                      ? 'Set up your credentials to manage candidates and Excel imports.'
+                      ? 'Set up your credentials to open your dashboard, import sheets, and manage candidates.'
                       : 'Enter your email address to receive a password reset link.'}
                 </p>
               </div>
