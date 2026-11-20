@@ -298,7 +298,7 @@ export function LoginScreen({
                 </h1>
                 <p className="text-xs text-[#6E6E73] dark:text-[#A1A1A6]">
                   {mode === 'signin'
-                    ? 'Access your 589+ candidate records, Kanban board, and workflow statuses.'
+                    ? 'Access your 610+ candidate records, Kanban board, and workflow statuses.'
                     : mode === 'signup'
                       ? 'Set up your credentials to open your dashboard, import sheets, and manage candidates.'
                       : 'Enter your email address to receive a password reset link.'}

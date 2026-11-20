@@ -240,7 +240,7 @@ export function LandingPage({
           <div className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 border-t border-black/[0.08] dark:border-white/[0.10] pt-6">
             <div>
               <div className="font-mono text-2xl sm:text-3xl font-semibold tabular-nums text-[#1D1D1F] dark:text-[#F5F5F7]">
-                589
+                610
               </div>
               <div className="text-xs text-[#6E6E73] dark:text-[#A1A1A6] mt-1">
                 Unique candidates synced from Form Responses
@@ -248,7 +248,7 @@ export function LandingPage({
             </div>
             <div>
               <div className="font-mono text-2xl sm:text-3xl font-semibold tabular-nums text-[#1D1D1F] dark:text-[#F5F5F7]">
-                155
+                159
               </div>
               <div className="text-xs text-[#6E6E73] dark:text-[#A1A1A6] mt-1">
                 Duplicate rows merged across email &amp; phone
@@ -313,7 +313,7 @@ export function LandingPage({
 
                   <div className="pt-4 border-t border-black/[0.06] dark:border-white/[0.08] flex items-center gap-4 text-xs text-[#6E6E73] dark:text-[#A1A1A6]">
                     <span className="tabular-nums font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">
-                      744 rows → 589 unique
+                      769 rows → 610 unique
                     </span>
                     <span aria-hidden="true">·</span>
                     <span>Append or Replace modes</span>

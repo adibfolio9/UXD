@@ -86,7 +86,7 @@ import {
 
 const THEME_KEY = 'strata-theme-v1';
 const NOTIF_SOUND_KEY = 'uxd-vault-notif-sound-v1';
-const SHEET_SYNC_VERSION_KEY_PREFIX = 'uxd-vault-sheet-sync-v20261120-r2-';
+const SHEET_SYNC_VERSION_KEY_PREFIX = 'uxd-vault-sheet-sync-v20261120-r3-';
 const BASE_DOC_TITLE = 'UXD Vault — Candidate & Lead Tracking';
 const SEED_TASK_IDS = new Set(INITIAL_WORKSPACE_STATE.tasks.map((t) => t.id));
 

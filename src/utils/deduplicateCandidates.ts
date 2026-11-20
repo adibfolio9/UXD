@@ -402,16 +402,21 @@ export function buildSheetSyncPlan(
         changed = true;
       }
 
+      const seedTs = parseCandidateTimestampMs(seedTask.timestamp, seedTask.updatedAt);
+      const existingTs = parseCandidateTimestampMs(existing.timestamp, existing.updatedAt);
+      const seedIsNewer = seedTs > existingTs;
+
       for (const field of BACKFILL_FIELDS) {
-        if (isBlankField(existing[field]) && !isBlankField(seedTask[field])) {
+        if (
+          !isBlankField(seedTask[field]) &&
+          (isBlankField(existing[field]) || (seedIsNewer && existing[field] !== seedTask[field]))
+        ) {
           existing[field] = seedTask[field];
           changed = true;
         }
       }
 
-      const seedTs = parseCandidateTimestampMs(seedTask.timestamp, seedTask.updatedAt);
-      const existingTs = parseCandidateTimestampMs(existing.timestamp, existing.updatedAt);
-      if (seedTs > existingTs && seedTask.timestamp.trim()) {
+      if (seedIsNewer && seedTask.timestamp.trim()) {
         existing.timestamp = seedTask.timestamp;
         changed = true;
       }
