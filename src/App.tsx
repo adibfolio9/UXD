@@ -23,12 +23,18 @@ import { Sidebar } from './components/Sidebar';
 import { StatusPipelineView } from './components/StatusPipelineView';
 import { TopBar } from './components/TopBar';
 import { INITIAL_WORKSPACE_STATE, TEAM_MEMBERS } from './data/seedData';
-import { auth } from './firebase';
+import {
+  auth,
+  clearSheetsAccessToken,
+  connectGoogleSheetsAccount,
+  getSheetsAccessToken,
+} from './firebase';
 import {
   PUBLIC_FORM_SLUG_ID,
   PendingLeadSubmission,
   WorkspaceSyncSnapshot,
   clearReadNotificationsInCloud,
+  createSheetSyncNotificationsInCloud,
   ensurePublicFormRouteRegistered,
   ensureUserAccountAndWorkspaceSeeded,
   ingestLeadSubmissionsToCloud,
@@ -56,6 +62,14 @@ import {
   subscribeToUserWorkspace,
 } from './services/firestoreWorkspace';
 import {
+  SheetsAuthExpiredError,
+  clearGoogleSheetSyncConfig,
+  loadGoogleSheetSyncConfig,
+  runLiveGoogleSheetSync,
+  saveGoogleSheetSyncConfig,
+} from './services/googleSheetsSync';
+import {
+  GoogleSheetSyncConfig,
   LeadNotification,
   PriorityLevel,
   Project,
@@ -86,7 +100,7 @@ import {
 
 const THEME_KEY = 'strata-theme-v1';
 const NOTIF_SOUND_KEY = 'uxd-vault-notif-sound-v1';
-const SHEET_SYNC_VERSION_KEY_PREFIX = 'uxd-vault-sheet-sync-v20261120-r3-';
+const SHEET_SYNC_VERSION_KEY_PREFIX = 'uxd-vault-sheet-sync-v20261124-r5-';
 const BASE_DOC_TITLE = 'UXD Vault — Candidate & Lead Tracking';
 const SEED_TASK_IDS = new Set(INITIAL_WORKSPACE_STATE.tasks.map((t) => t.id));
 
@@ -213,6 +227,18 @@ export default function App() {
   const initialNotifLoadDoneRef = useRef(false);
   const seenNotificationIdsRef = useRef<Set<string>>(new Set());
 
+  const [sheetSyncConfig, setSheetSyncConfig] = useState<GoogleSheetSyncConfig | null>(null);
+  const sheetSyncConfigRef = useRef<GoogleSheetSyncConfig | null>(null);
+  sheetSyncConfigRef.current = sheetSyncConfig;
+  const [sheetsConnected, setSheetsConnected] = useState<boolean>(() =>
+    Boolean(getSheetsAccessToken())
+  );
+  const [isSyncingGoogleSheet, setIsSyncingGoogleSheet] = useState(false);
+  const syncingGoogleSheetRef = useRef(false);
+  const [sheetSyncError, setSheetSyncError] = useState<string | null>(null);
+  const [syncPromptDismissed, setSyncPromptDismissed] = useState(false);
+  const [connectingGoogleTopBar, setConnectingGoogleTopBar] = useState(false);
+
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
     try {
@@ -235,6 +261,7 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
       setAuthReady(true);
+      setSheetsConnected(Boolean(getSheetsAccessToken()));
       if (!user || !user.emailVerified) {
         setWorkspaceReady(false);
         cloudCandidateIdsRef.current = new Set();
@@ -247,7 +274,11 @@ export default function App() {
         setToastQueue([]);
         initialNotifLoadDoneRef.current = false;
         seenNotificationIdsRef.current = new Set();
+        setSheetSyncConfig(null);
+        setSheetSyncError(null);
         setActiveView('dashboard');
+      } else {
+        setSheetSyncConfig(loadGoogleSheetSyncConfig(user.uid));
       }
     });
     return () => unsubscribe();
@@ -617,6 +648,208 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  const executeGoogleSheetSyncRef = useRef<
+    (overrideConfig?: GoogleSheetSyncConfig, isBackground?: boolean) => Promise<void>
+  >(async () => {});
+
+  executeGoogleSheetSyncRef.current = async (
+    overrideConfig?: GoogleSheetSyncConfig,
+    isBackground = false
+  ) => {
+    if (!currentUser || !currentUser.emailVerified) return;
+    const activeCfg = overrideConfig ?? sheetSyncConfigRef.current;
+    if (!activeCfg || (!activeCfg.spreadsheetId && !activeCfg.formId)) return;
+    if (
+      syncingGoogleSheetRef.current ||
+      importingToCloudRef.current ||
+      syncingUpdatedSheetRef.current
+    ) {
+      return;
+    }
+
+    const activeUid = currentUser.uid;
+    syncingGoogleSheetRef.current = true;
+    setIsSyncingGoogleSheet(true);
+    setSheetSyncError(null);
+
+    try {
+      const prev = workspaceRef.current;
+      const result = await runLiveGoogleSheetSync({
+        config: activeCfg,
+        currentTasks: prev.tasks,
+        statuses: prev.statuses,
+        projects: prev.projects,
+        members: TEAM_MEMBERS,
+        nextCodeNumber: prev.nextCodeNumber,
+      });
+
+      const mergedStatuses =
+        result.newStatuses.length > 0
+          ? [...prev.statuses, ...result.newStatuses].map((s, idx) => ({
+              ...s,
+              order: idx,
+            }))
+          : prev.statuses;
+      const mergedProjects = [...prev.projects, ...result.newProjects];
+
+      const { plan } = result;
+      const removedIdSet = new Set(plan.duplicateIdsRemoved);
+      const docIdsToDelete: string[] = [];
+      const tasksToSoftDelete: TaskItem[] = [];
+      for (const t of prev.tasks) {
+        if (!removedIdSet.has(t.id)) continue;
+        if (!seedReplacedRef.current && SEED_TASK_IDS.has(t.id)) {
+          tasksToSoftDelete.push(t);
+        } else if (cloudCandidateIdsRef.current.has(t.id)) {
+          docIdsToDelete.push(t.id);
+        }
+      }
+
+      const hasChanges =
+        plan.tasksToInsert.length > 0 ||
+        plan.tasksToUpdate.length > 0 ||
+        plan.duplicateIdsRemoved.length > 0 ||
+        result.newStatuses.length > 0 ||
+        result.newProjects.length > 0;
+
+      const parts: string[] = [];
+      if (plan.tasksToInsert.length > 0) parts.push(`${plan.tasksToInsert.length} added`);
+      if (plan.tasksToUpdate.length > 0) parts.push(`${plan.tasksToUpdate.length} updated`);
+      if (plan.duplicateIdsRemoved.length > 0) {
+        parts.push(`${plan.duplicateIdsRemoved.length} duplicates merged`);
+      }
+      const changeSummary =
+        parts.length > 0 ? parts.join(', ') : `Up to date (${result.uniqueSheetRows} unique)`;
+
+      const nextCfg: GoogleSheetSyncConfig = {
+        ...activeCfg,
+        formId: result.resolvedFormId ?? activeCfg.formId ?? null,
+        formTitle: result.resolvedFormTitle ?? activeCfg.formTitle ?? null,
+        spreadsheetId: result.resolvedSpreadsheetId || activeCfg.spreadsheetId,
+        spreadsheetUrl: result.resolvedSpreadsheetUrl || activeCfg.spreadsheetUrl,
+        spreadsheetTitle: result.spreadsheetTitle || activeCfg.spreadsheetTitle,
+        sheetName: result.sheetName || activeCfg.sheetName,
+        lastSyncedAt: new Date().toISOString(),
+        lastSyncedRowCount: result.totalRows,
+        lastSyncSummary: changeSummary,
+      };
+      setSheetSyncConfig(nextCfg);
+      saveGoogleSheetSyncConfig(activeUid, nextCfg);
+
+      if (hasChanges) {
+        const nextCode = Math.max(prev.nextCodeNumber, plan.nextCodeNumber);
+        setWorkspace({
+          ...prev,
+          statuses: mergedStatuses,
+          projects: mergedProjects,
+          tasks: plan.mergedTasks,
+          nextCodeNumber: nextCode,
+        });
+
+        setImportBanner(
+          `Google Sheet Auto-Sync (${nextCfg.spreadsheetTitle}): ${parts.join(', ')} — saved to cloud.`
+        );
+
+        importingToCloudRef.current = true;
+        pendingWorkspaceSnapshotRef.current = null;
+        try {
+          await saveSheetSyncToCloud(
+            activeUid,
+            {
+              newStatuses: result.newStatuses,
+              allStatuses: mergedStatuses,
+              newProjects: result.newProjects,
+              tasksToInsert: plan.tasksToInsert,
+              tasksToUpdate: plan.tasksToUpdate,
+              docIdsToDelete,
+              tasksToSoftDelete,
+              nextCodeNumber: nextCode,
+              currentCloudNextCodeNumber: cloudNextCodeRef.current,
+            },
+            cloudCandidateIdsRef.current
+          );
+          if (plan.tasksToInsert.length > 0 && plan.tasksToInsert.length <= 10) {
+            await createSheetSyncNotificationsInCloud(activeUid, plan.tasksToInsert);
+          } else if (plan.tasksToInsert.length > 0 && soundEnabledRef.current) {
+            playNewLeadChime();
+          }
+        } finally {
+          importingToCloudRef.current = false;
+          const pending =
+            pendingWorkspaceSnapshotRef.current as WorkspaceSyncSnapshot | null;
+          pendingWorkspaceSnapshotRef.current = null;
+          if (pending) {
+            cloudCandidateIdsRef.current = pending.cloudCandidateIds;
+            seedReplacedRef.current = pending.seedReplaced;
+            cloudNextCodeRef.current = pending.cloudNextCodeNumber;
+            setWorkspace(pending.workspace);
+          }
+        }
+      } else if (!isBackground) {
+        setImportBanner(
+          `Google Sheet "${nextCfg.spreadsheetTitle}" is up to date (${result.totalRows} rows · ${result.uniqueSheetRows} unique candidates).`
+        );
+      }
+    } catch (err) {
+      if (err instanceof SheetsAuthExpiredError) {
+        setSheetsConnected(false);
+      }
+      const message =
+        err instanceof Error ? err.message : 'Google Sheet auto-sync failed.';
+      setSheetSyncError(message);
+    } finally {
+      syncingGoogleSheetRef.current = false;
+      setIsSyncingGoogleSheet(false);
+    }
+  };
+
+  useEffect(() => {
+    if (
+      !workspaceReady ||
+      !currentUser ||
+      !currentUser.emailVerified ||
+      !sheetSyncConfig?.enabled
+    ) {
+      return;
+    }
+
+    if (sheetSyncConfig.authMode === 'oauth' && !sheetsConnected) {
+      return;
+    }
+
+    const lastMs = sheetSyncConfig.lastSyncedAt
+      ? Date.parse(sheetSyncConfig.lastSyncedAt)
+      : 0;
+    const elapsedMs = Date.now() - (Number.isFinite(lastMs) ? lastMs : 0);
+
+    let initialTimer: number | null = null;
+    if (elapsedMs > 30_000) {
+      initialTimer = window.setTimeout(() => {
+        void executeGoogleSheetSyncRef.current(undefined, true);
+      }, 2500);
+    }
+
+    const intervalMs = Math.max(1, sheetSyncConfig.intervalMinutes) * 60_000;
+    const timer = window.setInterval(() => {
+      void executeGoogleSheetSyncRef.current(undefined, true);
+    }, intervalMs);
+
+    return () => {
+      if (initialTimer !== null) window.clearTimeout(initialTimer);
+      window.clearInterval(timer);
+    };
+  }, [
+    workspaceReady,
+    currentUser,
+    sheetSyncConfig?.enabled,
+    sheetSyncConfig?.intervalMinutes,
+    sheetSyncConfig?.formId,
+    sheetSyncConfig?.spreadsheetId,
+    sheetSyncConfig?.sheetName,
+    sheetSyncConfig?.authMode,
+    sheetsConnected,
+  ]);
 
   if (fatalSyncError) {
     throw fatalSyncError;
@@ -1726,6 +1959,97 @@ export default function App() {
           </div>
         )}
 
+        {workspaceReady &&
+          sheetSyncConfig?.enabled &&
+          sheetSyncConfig.authMode === 'oauth' &&
+          !sheetsConnected &&
+          (sheetSyncConfig.formId || sheetSyncConfig.spreadsheetId) &&
+          activeView !== 'import' &&
+          activeView !== 'form' &&
+          !syncPromptDismissed && (
+            <div className="px-4 sm:px-6 py-2 bg-[#F5F5F7] dark:bg-[#1C1C1E] border-b border-black/[0.08] dark:border-white/[0.10] flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
+              <div className="flex items-center gap-2 min-w-0 text-[#1D1D1F] dark:text-[#F5F5F7]">
+                <span className="w-2 h-2 rounded-full bg-[#FF9500] shrink-0" />
+                <span className="truncate">
+                  {sheetSyncError
+                    ? sheetSyncError
+                    : `Google Form "${sheetSyncConfig.formTitle || sheetSyncConfig.spreadsheetTitle}" is linked — sign in with Google to fetch latest candidates.`}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={connectingGoogleTopBar || isSyncingGoogleSheet}
+                  onClick={() => {
+                    setConnectingGoogleTopBar(true);
+                    setSheetSyncError(null);
+                    void connectGoogleSheetsAccount()
+                      .then(() => {
+                        setSheetsConnected(true);
+                        return executeGoogleSheetSyncRef.current(undefined, false);
+                      })
+                      .catch((err) => {
+                        setSheetSyncError(
+                          err instanceof Error
+                            ? err.message
+                            : 'Unable to connect Google Forms & Sheets.'
+                        );
+                      })
+                      .finally(() => {
+                        setConnectingGoogleTopBar(false);
+                      });
+                  }}
+                  className="gsi-material-button h-8 px-3 rounded-[8px] border border-[#747775]/40 dark:border-white/20 bg-white dark:bg-[#131314] hover:bg-[#F8F9FA] dark:hover:bg-[#1F1F21] text-[#1F1F1F] dark:text-[#E3E3E3] text-xs font-medium inline-flex items-center gap-2 shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors disabled:opacity-50 whitespace-nowrap cursor-pointer"
+                >
+                  <svg
+                    version="1.1"
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 48 48"
+                    className="w-3.5 h-3.5 block shrink-0"
+                    aria-hidden="true"
+                  >
+                    <path
+                      fill="#EA4335"
+                      d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+                    />
+                    <path
+                      fill="#4285F4"
+                      d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+                    />
+                  </svg>
+                  <span>
+                    {connectingGoogleTopBar || isSyncingGoogleSheet
+                      ? 'Syncing...'
+                      : 'Sign in with Google'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('import')}
+                  className="text-xs font-medium text-[#0071E3] dark:text-[#2997FF] hover:underline whitespace-nowrap px-1"
+                >
+                  Settings
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSyncPromptDismissed(true)}
+                  aria-label="Dismiss Google sync reminder"
+                  className="p-1 rounded-md text-[#6E6E73] dark:text-[#A1A1A6] hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+
         <main className="flex-1 min-h-0 overflow-hidden">
           {!workspaceReady ? (
             <div className="h-full flex items-center justify-center p-6 text-sm text-[#6E6E73] dark:text-[#A1A1A6]">
@@ -1814,6 +2138,42 @@ export default function App() {
                     setImportModalOpen(true);
                   }}
                   onSyncLatestSheet={handleSyncLatestSheet}
+                  onSyncGoogleSheetNow={() => {
+                    if (
+                      sheetSyncConfig?.authMode === 'oauth' &&
+                      !sheetsConnected
+                    ) {
+                      setConnectingGoogleTopBar(true);
+                      setSheetSyncError(null);
+                      void connectGoogleSheetsAccount()
+                        .then(() => {
+                          setSheetsConnected(true);
+                          return executeGoogleSheetSyncRef.current(undefined, false);
+                        })
+                        .catch((err) => {
+                          setSheetSyncError(
+                            err instanceof Error
+                              ? err.message
+                              : 'Unable to connect Google Forms & Sheets.'
+                          );
+                          setActiveView('import');
+                        })
+                        .finally(() => {
+                          setConnectingGoogleTopBar(false);
+                        });
+                      return;
+                    }
+                    void executeGoogleSheetSyncRef.current(undefined, false);
+                  }}
+                  onOpenSheetSyncSettings={() => setActiveView('import')}
+                  googleSheetAutoSyncActive={Boolean(
+                    sheetSyncConfig?.enabled &&
+                      (sheetSyncConfig.authMode === 'public_link' || sheetsConnected)
+                  )}
+                  googleSheetLinked={Boolean(
+                    sheetSyncConfig?.spreadsheetId || sheetSyncConfig?.formId
+                  )}
+                  isSyncingGoogleSheet={isSyncingGoogleSheet}
                   onExportExcel={() =>
                     exportTasksToExcel({
                       tasks: filteredTasks,
@@ -1854,6 +2214,33 @@ export default function App() {
                   projects={workspace.projects}
                   members={TEAM_MEMBERS}
                   nextCodeNumber={workspace.nextCodeNumber}
+                  userEmail={currentUser.email || ''}
+                  sheetSyncConfig={sheetSyncConfig}
+                  sheetsConnected={sheetsConnected}
+                  isSyncingGoogleSheet={isSyncingGoogleSheet}
+                  sheetSyncError={sheetSyncError}
+                  onConnectGoogleSheets={async () => {
+                    const { accessToken } = await connectGoogleSheetsAccount();
+                    setSheetsConnected(true);
+                    setSheetSyncError(null);
+                    return accessToken;
+                  }}
+                  onDisconnectGoogleSheets={() => {
+                    clearSheetsAccessToken();
+                    setSheetsConnected(false);
+                  }}
+                  onSaveSheetSyncConfig={(next) => {
+                    setSheetSyncConfig(next);
+                    setSheetSyncError(null);
+                    if (next) {
+                      saveGoogleSheetSyncConfig(uid, next);
+                    } else {
+                      clearGoogleSheetSyncConfig(uid);
+                    }
+                  }}
+                  onSyncGoogleSheetNow={async (override) => {
+                    await executeGoogleSheetSyncRef.current(override, false);
+                  }}
                   onConfirmImport={handleConfirmImport}
                 />
               )}

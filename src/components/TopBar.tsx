@@ -22,7 +22,7 @@ const VIEW_TITLES: Record<ViewMode, string> = {
   list: 'List / Table',
   pipeline: 'Status Pipeline',
   analytics: 'Flow Analytics',
-  import: 'Import Excel',
+  import: 'Sheet Sync & Import',
 };
 
 export function TopBar({

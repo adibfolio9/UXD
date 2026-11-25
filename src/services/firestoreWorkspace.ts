@@ -900,6 +900,9 @@ export async function saveDeduplicationToCloud(
 export async function saveSheetSyncToCloud(
   uid: string,
   params: {
+    newStatuses?: StatusDefinition[];
+    allStatuses?: StatusDefinition[];
+    newProjects?: Project[];
     tasksToInsert: TaskItem[];
     tasksToUpdate: TaskItem[];
     docIdsToDelete: string[];
@@ -909,6 +912,42 @@ export async function saveSheetSyncToCloud(
   },
   cloudIds: Set<string>
 ): Promise<void> {
+  if (
+    (params.newStatuses && params.newStatuses.length > 0) ||
+    (params.newProjects && params.newProjects.length > 0)
+  ) {
+    const newStatusIds = new Set(
+      (params.newStatuses ?? []).map((ns) => sanitizeId(ns.id, 'status'))
+    );
+    const schemaOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+    for (const s of params.allStatuses ?? []) {
+      const sid = sanitizeId(s.id, 'status');
+      const ref = doc(db, 'users', uid, 'statuses', sid);
+      if (newStatusIds.has(sid)) {
+        schemaOps.push((batch) => batch.set(ref, toStatusPayload(uid, s, true)));
+      } else {
+        schemaOps.push((batch) =>
+          batch.update(ref, {
+            order: Math.max(0, Math.min(1000, Math.floor(Number.isFinite(s.order) ? s.order : 0))),
+            updatedAt: serverTimestamp(),
+          })
+        );
+      }
+    }
+    for (const p of params.newProjects ?? []) {
+      const pid = sanitizeId(p.id, 'proj');
+      schemaOps.push((batch) =>
+        batch.set(doc(db, 'users', uid, 'projects', pid), toProjectPayload(uid, p, true))
+      );
+    }
+    await commitBatchesInWaves(
+      schemaOps,
+      DELETE_BATCH_SIZE,
+      OperationType.WRITE,
+      `users/${uid}/statuses`
+    );
+  }
+
   const softDeleteList = params.tasksToSoftDelete ?? [];
   const protectedIds = new Set<string>([
     ...params.tasksToInsert.map((t) => sanitizeId(t.id, 'cand')),
@@ -1006,6 +1045,62 @@ export async function saveSheetSyncToCloud(
       handleFirestoreError(error, OperationType.UPDATE, `users/${uid}/workspaces/default`);
     }
   }
+}
+
+export async function createSheetSyncNotificationsInCloud(
+  uid: string,
+  newTasks: TaskItem[]
+): Promise<void> {
+  if (newTasks.length === 0 || newTasks.length > 10) return;
+
+  const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+  for (const rawTask of newTasks) {
+    const candidateId = sanitizeId(rawTask.id, 'cand');
+    const notifId = sanitizeId(`notif-${candidateId}`, 'notif');
+    const notifRef = doc(db, 'users', uid, 'notifications', notifId);
+    const existing = await getDoc(notifRef);
+    if (existing.exists()) continue;
+
+    const safeName = clamp(rawTask.fullName.trim() || 'New Candidate', LIMITS.fullName);
+    const safeExp = clamp(rawTask.yearsOfExperience, LIMITS.experience);
+    const safeAi = clamp(rawTask.designedAiProduct, LIMITS.aiProduct);
+    const summaryParts = [
+      safeExp || null,
+      rawTask.currentLocation.trim() || null,
+      safeAi ? `AI: ${safeAi}` : null,
+    ].filter(Boolean);
+
+    ops.push((batch) =>
+      batch.set(notifRef, {
+        ownerUid: uid,
+        id: notifId,
+        type: 'new_lead',
+        candidateId,
+        candidateCode: clamp(rawTask.code || 'CND-101', LIMITS.code),
+        candidateName: safeName,
+        candidateEmail: clamp(rawTask.email, LIMITS.email),
+        experience: safeExp,
+        designedAiProduct: safeAi,
+        title: clamp('Synced from Google Sheet', 140),
+        message: clamp(
+          summaryParts.length > 0
+            ? `${safeName} (${summaryParts.join(' · ')}) synced from Google Form Sheet.`
+            : `${safeName} synced automatically from Google Form Sheet.`,
+          400
+        ),
+        read: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+    );
+  }
+
+  await commitBatchesInWaves(
+    ops,
+    LEAD_INGEST_BATCH_SIZE,
+    OperationType.CREATE,
+    `users/${uid}/notifications`
+  );
 }
 
 export async function saveStatusesReorderToCloud(

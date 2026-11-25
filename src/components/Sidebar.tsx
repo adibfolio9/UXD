@@ -42,7 +42,7 @@ const NAV_ITEMS: { id: ViewMode; label: string; icon: typeof FolderKanban }[] = 
   { id: 'board', label: 'Kanban Board', icon: FolderKanban },
   { id: 'pipeline', label: 'Status Pipeline', icon: SlidersHorizontal },
   { id: 'analytics', label: 'Flow Analytics', icon: BarChart3 },
-  { id: 'import', label: 'Import Excel', icon: FileSpreadsheet },
+  { id: 'import', label: 'Sheet Sync & Import', icon: FileSpreadsheet },
 ];
 
 export function Sidebar({

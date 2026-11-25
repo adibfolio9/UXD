@@ -47,6 +47,11 @@ interface ListViewProps {
   onOpenNewItem: () => void;
   onOpenImportSheet: () => void;
   onSyncLatestSheet: () => void;
+  onSyncGoogleSheetNow: () => void;
+  onOpenSheetSyncSettings: () => void;
+  googleSheetAutoSyncActive: boolean;
+  googleSheetLinked: boolean;
+  isSyncingGoogleSheet: boolean;
   onExportExcel: () => void;
   onRemoveDuplicates: () => void;
 }
@@ -67,6 +72,11 @@ export function ListView({
   onOpenNewItem,
   onOpenImportSheet,
   onSyncLatestSheet,
+  onSyncGoogleSheetNow,
+  onOpenSheetSyncSettings,
+  googleSheetAutoSyncActive,
+  googleSheetLinked,
+  isSyncingGoogleSheet,
   onExportExcel,
   onRemoveDuplicates,
 }: ListViewProps) {
@@ -625,11 +635,29 @@ export function ListView({
               </button>
               <button
                 type="button"
+                onClick={googleSheetLinked ? onSyncGoogleSheetNow : onOpenSheetSyncSettings}
+                disabled={isSyncingGoogleSheet}
+                className="text-xs font-medium text-[#0071E3] dark:text-[#2997FF] hover:underline disabled:opacity-50 inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                {googleSheetAutoSyncActive && !isSyncingGoogleSheet && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#28CD41] dark:bg-[#30D158]" />
+                )}
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGoogleSheet ? 'animate-spin' : ''}`} />
+                <span>
+                  {isSyncingGoogleSheet
+                    ? 'Syncing Google Sheet...'
+                    : googleSheetLinked
+                      ? 'Sync Google Sheet'
+                      : 'Auto-Sync Google Sheet'}
+                </span>
+              </button>
+              <button
+                type="button"
                 onClick={onSyncLatestSheet}
                 className="text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] inline-flex items-center gap-1.5 whitespace-nowrap"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>Sync Form List</span>
+                <span>Sync Built-in Sheet</span>
               </button>
               <button
                 type="button"

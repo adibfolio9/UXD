@@ -96,3 +96,30 @@ export interface LeadNotification {
   createdAt: string;
 }
 
+export type GoogleSheetAuthMode = 'oauth' | 'public_link';
+
+export interface GoogleSheetTabInfo {
+  sheetId: number;
+  title: string;
+  rowCount?: number;
+}
+
+export interface GoogleSheetSyncConfig {
+  sourceType?: 'sheet' | 'form';
+  formId?: string | null;
+  formUrl?: string | null;
+  formTitle?: string | null;
+  spreadsheetId: string;
+  spreadsheetUrl: string;
+  spreadsheetTitle: string;
+  sheetName: string;
+  authMode: GoogleSheetAuthMode;
+  enabled: boolean;
+  intervalMinutes: number;
+  autoCreateStatuses: boolean;
+  lastSyncedAt: string | null;
+  lastSyncedRowCount: number | null;
+  lastSyncSummary: string | null;
+}
+
+

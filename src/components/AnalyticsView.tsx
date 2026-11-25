@@ -1,9 +1,16 @@
+import { useMemo, useState } from 'react';
+import { Globe, Search } from 'lucide-react';
 import { Project, StatusDefinition, TaskItem } from '../types';
+import {
+  SearchGroundingResult,
+  searchMarketGrounding,
+} from '../services/searchGrounding';
 import {
   STATUS_CATEGORY_LABELS,
   formatShortDate,
   getStatusColorMeta,
 } from '../utils/statusStyles';
+import { SearchGroundingResultPanel } from './SearchGroundingBlock';
 import { StatusIcon } from './StatusIcon';
 
 interface AnalyticsViewProps {
@@ -34,6 +41,59 @@ export function AnalyticsView({
     /^yes/i.test(t.designedAiProduct.trim())
   ).length;
   const completionPct = totalItems === 0 ? 0 : Math.round((doneItems / totalItems) * 100);
+
+  const [marketQuery, setMarketQuery] = useState('');
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  const [marketResult, setMarketResult] = useState<SearchGroundingResult | null>(null);
+
+  const poolContext = useMemo(() => {
+    const locationCounts = new Map<string, number>();
+    let gulfReady = 0;
+    let immediateCount = 0;
+
+    for (const t of tasks) {
+      const loc = t.currentLocation.trim() || 'Unspecified';
+      locationCounts.set(loc, (locationCounts.get(loc) ?? 0) + 1);
+      if (/(dubai|gulf)/i.test(t.readyToRelocateIn)) gulfReady += 1;
+      if (/^immediate$/i.test(t.noticePeriod.trim())) immediateCount += 1;
+    }
+
+    const topLocations = Array.from(locationCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([loc, cnt]) => `${loc}: ${cnt}`)
+      .join(', ');
+
+    return `Total candidates: ${totalItems}; AI product experienced: ${aiExperiencedCount}; Immediate joiners: ${immediateCount}; Dubai/Gulf relocation open: ${gulfReady}; Top locations: ${topLocations}`;
+  }, [tasks, totalItems, aiExperiencedCount]);
+
+  const runMarketSearch = async (queryText: string) => {
+    const clean = queryText.trim();
+    if (!clean || marketLoading) return;
+    setMarketQuery(clean);
+    setMarketError(null);
+    setMarketLoading(true);
+    try {
+      const res = await searchMarketGrounding({
+        query: clean,
+        poolContext,
+      });
+      setMarketResult(res);
+    } catch (err) {
+      setMarketError(
+        err instanceof Error ? err.message : 'Unable to fetch grounded market research.'
+      );
+    } finally {
+      setMarketLoading(false);
+    }
+  };
+
+  const marketPresets = [
+    '2026 UX & AI Product Designer salary ranges in Bengaluru and Delhi NCR by years of experience',
+    'Current Dubai & UAE hiring demand, relocation packages, and compensation benchmarks for Senior Product Designers in 2026',
+    'Top portfolio evaluation criteria and interview trends for AI-native Product Designers in 2026',
+  ];
 
   return (
     <div className="h-full overflow-y-auto px-4 sm:px-8 py-8">
@@ -235,6 +295,73 @@ export function AnalyticsView({
                 </tbody>
               </table>
             </div>
+          </div>
+        </section>
+
+        {/* Live Google Search Market Research */}
+        <section aria-label="Live Google Search Market Research" className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="text-[15px] font-display font-semibold tracking-[-0.01em] text-[#1D1D1F] dark:text-[#F5F5F7] flex items-center gap-2">
+                <Globe className="w-4 h-4 text-[#0071E3] dark:text-[#2997FF]" />
+                <span>Live Recruiting Market Grounding</span>
+              </h2>
+              <p className="text-xs text-[#6E6E73] dark:text-[#A1A1A6] mt-0.5">
+                Query up-to-date salary bands, relocation demand, and AI design hiring trends grounded with Google Search.
+              </p>
+            </div>
+            <span className="text-[11px] font-mono text-[#86868B] shrink-0">
+              Gemini 4 Hydrogen · Google Search
+            </span>
+          </div>
+
+          <div className="rounded-2xl border border-black/[0.08] dark:border-white/[0.10] bg-white dark:bg-[#1C1C1E] p-5 space-y-4 shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
+            <div className="flex flex-wrap gap-2">
+              {marketPresets.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  disabled={marketLoading}
+                  onClick={() => void runMarketSearch(preset)}
+                  className="px-3 py-1.5 rounded-lg border border-black/[0.08] dark:border-white/[0.10] bg-[#F5F5F7] dark:bg-[#2C2C2E] hover:border-[#0071E3] dark:hover:border-[#0A84FF] text-xs text-[#1D1D1F] dark:text-[#E5E5EA] text-left transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                >
+                  <Search className="w-3 h-3 text-[#0071E3] dark:text-[#2997FF] shrink-0" />
+                  <span>{preset}</span>
+                </button>
+              ))}
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void runMarketSearch(marketQuery);
+              }}
+              className="flex flex-col sm:flex-row gap-2"
+            >
+              <input
+                type="text"
+                value={marketQuery}
+                onChange={(e) => setMarketQuery(e.target.value)}
+                placeholder="Ask a live recruiting market question (e.g., notice period buyout norms in India for senior UX designers)..."
+                aria-label="Live recruiting market query"
+                className="flex-1 h-10 px-3.5 text-sm rounded-[10px] border border-black/[0.10] dark:border-white/[0.12] bg-[#F5F5F7] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-[#F5F5F7] placeholder:text-[#86868B] focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
+              />
+              <button
+                type="submit"
+                disabled={marketLoading || !marketQuery.trim()}
+                className="h-10 px-4 rounded-[10px] bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] disabled:opacity-45 text-xs font-medium text-white inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>Search Web Data</span>
+              </button>
+            </form>
+
+            <SearchGroundingResultPanel
+              result={marketResult}
+              loading={marketLoading}
+              error={marketError}
+              emptyHint="Select a benchmark prompt above or enter a query to fetch cited Google Search market data tailored to your candidate pool."
+            />
           </div>
         </section>
       </div>

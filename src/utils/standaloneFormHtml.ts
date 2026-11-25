@@ -1,4 +1,5 @@
 import firebaseConfig from '../../firebase-applet-config.json';
+import { FIRESTORE_DATABASE_ID } from '../firebase';
 
 function escapeHtml(value: string): string {
   return value
@@ -23,7 +24,7 @@ export function buildStandaloneLeadFormHtml(targetUid: string): string {
     storageBucket: firebaseConfig.storageBucket,
     messagingSenderId: firebaseConfig.messagingSenderId,
     appId: firebaseConfig.appId,
-    firestoreDatabaseId: firebaseConfig.firestoreDatabaseId,
+    firestoreDatabaseId: FIRESTORE_DATABASE_ID,
   });
 
   return `<!doctype html>

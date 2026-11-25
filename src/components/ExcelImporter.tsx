@@ -161,43 +161,15 @@ export function ExcelImporter({
     setParseError(null);
     setLoadingAttachedSheet(true);
     try {
-      const [baseRes, latestRes] = await Promise.all([
-        fetch('/assets/aistudio/Form_Responses_1_9feed92b.html'),
-        fetch('/assets/aistudio/Form_Responses_1_b79bf74c.html'),
-      ]);
-      if (!baseRes.ok && !latestRes.ok) {
-        throw new Error(`HTTP ${latestRes.status}`);
+      const res = await fetch('/assets/aistudio/Form_Responses_1_da6b28ad.html');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
 
-      const baseParsed = baseRes.ok
-        ? parseHtmlSheetDocument(await baseRes.text(), 'Form Responses 1.html')
-        : null;
-      const latestParsed = latestRes.ok
-        ? parseHtmlSheetDocument(await latestRes.text(), 'Form Responses 1 (Latest).html')
-        : null;
-
-      let parsed: ParsedWorkbook;
-      if (baseParsed && latestParsed) {
-        const baseSheetName = baseParsed.sheetNames[0] ?? 'Form Responses';
-        const latestSheetName = latestParsed.sheetNames[0] ?? 'Form Responses';
-        const baseSheet = baseParsed.sheets[baseSheetName];
-        const latestSheet = latestParsed.sheets[latestSheetName];
-        const mergedHeaders = Array.from(
-          new Set([...(baseSheet?.headers ?? []), ...(latestSheet?.headers ?? [])])
-        );
-        parsed = {
-          fileName: 'Form Responses 1 (All 769 rows).html',
-          sheetNames: [baseSheetName],
-          sheets: {
-            [baseSheetName]: {
-              headers: mergedHeaders,
-              rows: [...(baseSheet?.rows ?? []), ...(latestSheet?.rows ?? [])],
-            },
-          },
-        };
-      } else {
-        parsed = (latestParsed ?? baseParsed)!;
-      }
+      const parsed = parseHtmlSheetDocument(
+        await res.text(),
+        'Form Responses 1 (All 810 rows).html'
+      );
 
       const firstSheet = parsed.sheetNames[0] ?? '';
       const firstHeaders = parsed.sheets[firstSheet]?.headers ?? [];
@@ -315,7 +287,7 @@ export function ExcelImporter({
                   Uploaded Form Responses 1 Sheet (.html)
                 </div>
                 <div className="text-xs text-[#6E6E73] dark:text-[#A1A1A6]">
-                  Load all 769 responses directly, auto-remove duplicates, and sync all 610 unique candidates.
+                  Load all 810 responses directly, auto-remove duplicates, and sync all 633 unique candidates.
                 </div>
               </div>
             </div>

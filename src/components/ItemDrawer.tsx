@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, Trash2, X } from 'lucide-react';
+import { ExternalLink, Globe, Search, Trash2, X } from 'lucide-react';
 import {
   PriorityLevel,
   Project,
@@ -8,6 +8,11 @@ import {
   TeamMember,
 } from '../types';
 import {
+  CandidateGroundingFocus,
+  SearchGroundingResult,
+  searchCandidateGrounding,
+} from '../services/searchGrounding';
+import {
   PRIORITY_LABELS,
   formatShortDate,
   isExternalUrlValue,
@@ -15,6 +20,7 @@ import {
 } from '../utils/statusStyles';
 import { Avatar } from './Avatar';
 import { CandidateAvatar } from './CandidateAvatar';
+import { SearchGroundingResultPanel } from './SearchGroundingBlock';
 import { StatusIcon } from './StatusIcon';
 
 interface ItemDrawerProps {
@@ -41,12 +47,49 @@ export function ItemDrawer({
   onDeleteTask,
 }: ItemDrawerProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [groundingLoading, setGroundingLoading] = useState(false);
+  const [groundingError, setGroundingError] = useState<string | null>(null);
+  const [groundingQuestion, setGroundingQuestion] = useState('');
+  const [activeFocus, setActiveFocus] = useState<CandidateGroundingFocus | null>(null);
+  const [groundingCache, setGroundingCache] = useState<Record<string, SearchGroundingResult>>({});
 
   useEffect(() => {
     setConfirmingDelete(false);
+    setGroundingError(null);
+    setGroundingQuestion('');
+    setActiveFocus(null);
   }, [task?.id]);
 
   if (!task) return null;
+
+  const activeCacheKey = activeFocus ? `${task.id}:${activeFocus}` : null;
+  const activeGroundingResult = activeCacheKey ? groundingCache[activeCacheKey] ?? null : null;
+
+  const runCandidateSearch = async (
+    focus: CandidateGroundingFocus,
+    customQuestion?: string
+  ) => {
+    setActiveFocus(focus);
+    setGroundingError(null);
+    setGroundingLoading(true);
+    try {
+      const res = await searchCandidateGrounding({
+        task,
+        focus,
+        customQuestion,
+      });
+      setGroundingCache((prev) => ({
+        ...prev,
+        [`${task.id}:${focus}`]: res,
+      }));
+    } catch (err) {
+      setGroundingError(
+        err instanceof Error ? err.message : 'Unable to run Google Search verification.'
+      );
+    } finally {
+      setGroundingLoading(false);
+    }
+  };
 
   const sortedStatuses = [...statuses].sort((a, b) => a.order - b.order);
   const currentStatus = sortedStatuses.find((s) => s.id === task.statusId);
@@ -462,6 +505,84 @@ export function ItemDrawer({
                 </select>
               </div>
             </div>
+          </div>
+
+          {/* Google Search Grounding */}
+          <div className="pt-4 border-t border-black/[0.08] dark:border-white/[0.10] space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Globe className="w-4 h-4 text-[#0071E3] dark:text-[#2997FF]" />
+                <h3 className="text-xs font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                  Live Web &amp; Market Grounding
+                </h3>
+              </div>
+              <span className="text-[11px] font-mono text-[#86868B]">
+                Google Search · Gemini 4 Hydrogen
+              </span>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={groundingLoading}
+                onClick={() => void runCandidateSearch('web_profile')}
+                className={`h-8 px-3 rounded-[10px] border text-xs font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 ${
+                  activeFocus === 'web_profile'
+                    ? 'border-[#0071E3] dark:border-[#0A84FF] bg-[#0071E3]/[0.08] dark:bg-[#0A84FF]/[0.18] text-[#0071E3] dark:text-[#2997FF]'
+                    : 'border-black/[0.10] dark:border-white/[0.12] bg-[#F5F5F7] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-[#F5F5F7] hover:bg-[#E8E8ED] dark:hover:bg-[#3A3A3C]'
+                }`}
+              >
+                <Search className="w-3.5 h-3.5" />
+                <span>Verify Web &amp; Portfolio</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={groundingLoading}
+                onClick={() => void runCandidateSearch('comp_benchmark')}
+                className={`h-8 px-3 rounded-[10px] border text-xs font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 ${
+                  activeFocus === 'comp_benchmark'
+                    ? 'border-[#0071E3] dark:border-[#0A84FF] bg-[#0071E3]/[0.08] dark:bg-[#0A84FF]/[0.18] text-[#0071E3] dark:text-[#2997FF]'
+                    : 'border-black/[0.10] dark:border-white/[0.12] bg-[#F5F5F7] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-[#F5F5F7] hover:bg-[#E8E8ED] dark:hover:bg-[#3A3A3C]'
+                }`}
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>Benchmark Salary</span>
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const clean = groundingQuestion.trim();
+                if (!clean || groundingLoading) return;
+                void runCandidateSearch('custom', clean);
+              }}
+              className="flex items-center gap-2"
+            >
+              <input
+                type="text"
+                value={groundingQuestion}
+                onChange={(e) => setGroundingQuestion(e.target.value)}
+                placeholder={`Ask Google Search about ${task.fullName} or ${task.currentLocation || 'role market'}...`}
+                aria-label="Ask Google Search about this candidate"
+                className="flex-1 h-9 px-3 text-xs rounded-[10px] border border-black/[0.10] dark:border-white/[0.12] bg-[#F5F5F7] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-[#F5F5F7] placeholder:text-[#86868B] focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
+              />
+              <button
+                type="submit"
+                disabled={groundingLoading || !groundingQuestion.trim()}
+                className="h-9 px-3.5 rounded-[10px] bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] disabled:opacity-45 text-xs font-medium text-white transition-colors shrink-0"
+              >
+                Search
+              </button>
+            </form>
+
+            <SearchGroundingResultPanel
+              result={activeGroundingResult}
+              loading={groundingLoading}
+              error={groundingError}
+              emptyHint="Run a live Google Search check to verify public portfolio links, design footprint, or 2026 compensation benchmarks."
+            />
           </div>
 
           {/* Status Transition History */}
