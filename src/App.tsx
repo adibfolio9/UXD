@@ -19,6 +19,7 @@ import { NewItemModal } from './components/NewItemModal';
 import { NewLeadToast } from './components/NewLeadToast';
 import { NewStatusModal } from './components/NewStatusModal';
 import { NotificationCenter } from './components/NotificationCenter';
+import { ShareResumesConfirmModal } from './components/ShareResumesConfirmModal';
 import { Sidebar } from './components/Sidebar';
 import { StatusPipelineView } from './components/StatusPipelineView';
 import { TopBar } from './components/TopBar';
@@ -237,6 +238,7 @@ export default function App() {
   const [isSyncingGoogleSheet, setIsSyncingGoogleSheet] = useState(false);
   const syncingGoogleSheetRef = useRef(false);
   const [sheetSyncError, setSheetSyncError] = useState<string | null>(null);
+  const [shareResumesModalOpen, setShareResumesModalOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
@@ -2088,6 +2090,7 @@ export default function App() {
                     sheetSyncConfig?.spreadsheetId || sheetSyncConfig?.formId
                   )}
                   isSyncingGoogleSheet={isSyncingGoogleSheet}
+                  onOpenShareResumes={() => setShareResumesModalOpen(true)}
                   onExportExcel={() =>
                     exportTasksToExcel({
                       tasks: filteredTasks,
@@ -2155,6 +2158,7 @@ export default function App() {
                   onSyncGoogleSheetNow={async (override) => {
                     await executeGoogleSheetSyncRef.current(override, false);
                   }}
+                  onOpenShareResumes={() => setShareResumesModalOpen(true)}
                   onConfirmImport={handleConfirmImport}
                 />
               )}
@@ -2210,6 +2214,19 @@ export default function App() {
           setImportError(null);
         }}
         onConfirmImport={handleConfirmImport}
+      />
+
+      <ShareResumesConfirmModal
+        open={shareResumesModalOpen}
+        tasks={workspace.tasks}
+        sheetsConnected={sheetsConnected}
+        onConnectGoogle={async () => {
+          const { accessToken } = await connectGoogleSheetsAccount();
+          setSheetsConnected(true);
+          return accessToken;
+        }}
+        onAuthExpired={() => setSheetsConnected(false)}
+        onClose={() => setShareResumesModalOpen(false)}
       />
 
       <NewLeadToast

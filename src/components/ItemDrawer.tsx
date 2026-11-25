@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, Globe, Search, Trash2, X } from 'lucide-react';
+import { ExternalLink, FileText, Globe, Search, Trash2, X } from 'lucide-react';
 import {
   PriorityLevel,
   Project,
@@ -20,6 +20,7 @@ import {
 } from '../utils/statusStyles';
 import { Avatar } from './Avatar';
 import { CandidateAvatar } from './CandidateAvatar';
+import { ResumePreviewModal } from './ResumePreviewModal';
 import { SearchGroundingResultPanel } from './SearchGroundingBlock';
 import { StatusIcon } from './StatusIcon';
 
@@ -52,12 +53,14 @@ export function ItemDrawer({
   const [groundingQuestion, setGroundingQuestion] = useState('');
   const [activeFocus, setActiveFocus] = useState<CandidateGroundingFocus | null>(null);
   const [groundingCache, setGroundingCache] = useState<Record<string, SearchGroundingResult>>({});
+  const [resumePreviewOpen, setResumePreviewOpen] = useState(false);
 
   useEffect(() => {
     setConfirmingDelete(false);
     setGroundingError(null);
     setGroundingQuestion('');
     setActiveFocus(null);
+    setResumePreviewOpen(false);
   }, [task?.id]);
 
   if (!task) return null;
@@ -370,15 +373,25 @@ export function ItemDrawer({
                   Upload Resume
                 </label>
                 {isExternalUrlValue(task.resumeUrl) && (
-                  <a
-                    href={sanitizeExternalUrl(task.resumeUrl)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs text-[#0071E3] dark:text-[#2997FF] hover:underline"
-                  >
-                    <span>Open Resume</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+                  <div className="inline-flex items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setResumePreviewOpen(true)}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-[#0071E3] dark:text-[#2997FF] hover:underline cursor-pointer"
+                    >
+                      <FileText className="w-3 h-3" />
+                      <span>Preview Resume</span>
+                    </button>
+                    <a
+                      href={sanitizeExternalUrl(task.resumeUrl)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] hover:underline"
+                    >
+                      <span>Open</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
                 )}
               </div>
               <input
@@ -617,6 +630,11 @@ export function ItemDrawer({
           </div>
         </div>
       </div>
+
+      <ResumePreviewModal
+        task={resumePreviewOpen ? task : null}
+        onClose={() => setResumePreviewOpen(false)}
+      />
     </div>
   );
 }

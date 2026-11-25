@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   FileText,
   Filter,
+  Globe,
   Plus,
   RefreshCw,
   Search,
@@ -52,6 +53,7 @@ interface ListViewProps {
   googleSheetAutoSyncActive: boolean;
   googleSheetLinked: boolean;
   isSyncingGoogleSheet: boolean;
+  onOpenShareResumes: () => void;
   onExportExcel: () => void;
   onRemoveDuplicates: () => void;
 }
@@ -77,6 +79,7 @@ export function ListView({
   googleSheetAutoSyncActive,
   googleSheetLinked,
   isSyncingGoogleSheet,
+  onOpenShareResumes,
   onExportExcel,
   onRemoveDuplicates,
 }: ListViewProps) {
@@ -650,6 +653,15 @@ export function ListView({
                       ? 'Sync Google Form'
                       : 'Auto-Sync Google Form'}
                 </span>
+              </button>
+              <button
+                type="button"
+                onClick={onOpenShareResumes}
+                disabled={tasks.length === 0}
+                className="text-xs font-medium text-[#0071E3] dark:text-[#2997FF] hover:underline disabled:opacity-40 inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>Share Resumes Publicly</span>
               </button>
               <button
                 type="button"

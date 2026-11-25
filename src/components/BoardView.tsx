@@ -7,6 +7,7 @@ import {
   ChevronRight,
   ExternalLink,
   FileSpreadsheet,
+  FileText,
   GripVertical,
   Plus,
   Search,
@@ -28,6 +29,7 @@ import {
 } from '../utils/statusStyles';
 import { Avatar } from './Avatar';
 import { CandidateAvatar } from './CandidateAvatar';
+import { ResumePreviewModal } from './ResumePreviewModal';
 import { StatusIcon } from './StatusIcon';
 
 interface BoardViewProps {
@@ -77,6 +79,7 @@ export function BoardView({
   const [inlineAddStatusId, setInlineAddStatusId] = useState<string | null>(null);
   const [inlineName, setInlineName] = useState('');
   const [columnVisibleLimits, setColumnVisibleLimits] = useState<Record<string, number>>({});
+  const [resumePreviewTask, setResumePreviewTask] = useState<TaskItem | null>(null);
 
   const DEFAULT_CARD_LIMIT = 40;
 
@@ -433,6 +436,24 @@ export function BoardView({
                                   </a>
                                 </>
                               )}
+                              {isExternalUrlValue(task.resumeUrl) && (
+                                <>
+                                  <span className="text-[#D2D2D7] dark:text-[#38383A]" aria-hidden="true">
+                                    ·
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setResumePreviewTask(task);
+                                    }}
+                                    className="inline-flex items-center gap-1 text-[#0071E3] dark:text-[#2997FF] hover:underline whitespace-nowrap cursor-pointer"
+                                  >
+                                    <FileText className="w-3 h-3" aria-hidden="true" />
+                                    <span>Resume</span>
+                                  </button>
+                                </>
+                              )}
                             </div>
 
                             <div className="flex items-center gap-1.5 shrink-0">
@@ -572,6 +593,11 @@ export function BoardView({
           </button>
         </div>
       </div>
+
+      <ResumePreviewModal
+        task={resumePreviewTask}
+        onClose={() => setResumePreviewTask(null)}
+      />
     </div>
   );
 }

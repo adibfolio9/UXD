@@ -25,6 +25,7 @@ interface ImportExcelViewProps {
   onDisconnectGoogleSheets: () => void;
   onSaveSheetSyncConfig: (next: GoogleSheetSyncConfig | null) => void;
   onSyncGoogleSheetNow: (overrideConfig?: GoogleSheetSyncConfig) => Promise<void>;
+  onOpenShareResumes: () => void;
   onConfirmImport: (payload: {
     targetView: 'board' | 'list';
     mode: 'append' | 'replace';
@@ -53,6 +54,7 @@ export function ImportExcelView({
   onDisconnectGoogleSheets,
   onSaveSheetSyncConfig,
   onSyncGoogleSheetNow,
+  onOpenShareResumes,
   onConfirmImport,
 }: ImportExcelViewProps) {
   return (
@@ -77,6 +79,7 @@ export function ImportExcelView({
           onDisconnectGoogleSheets={onDisconnectGoogleSheets}
           onSaveConfig={onSaveSheetSyncConfig}
           onSyncNow={onSyncGoogleSheetNow}
+          onOpenShareResumes={onOpenShareResumes}
         />
 
         <div className="pt-2 space-y-3">

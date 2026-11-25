@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Clock,
   ExternalLink,
+  Globe,
   Link2,
   RefreshCw,
   Sheet,
@@ -34,6 +35,7 @@ interface GoogleSheetAutoSyncPanelProps {
   onDisconnectGoogleSheets: () => void;
   onSaveConfig: (next: GoogleSheetSyncConfig | null) => void;
   onSyncNow: (overrideConfig?: GoogleSheetSyncConfig) => Promise<void>;
+  onOpenShareResumes?: () => void;
 }
 
 const INTERVAL_OPTIONS = [
@@ -53,6 +55,7 @@ export function GoogleSheetAutoSyncPanel({
   onDisconnectGoogleSheets,
   onSaveConfig,
   onSyncNow,
+  onOpenShareResumes,
 }: GoogleSheetAutoSyncPanelProps) {
   const [urlInput, setUrlInput] = useState(
     config?.formUrl || config?.spreadsheetUrl || config?.spreadsheetId || DEFAULT_GOOGLE_FORM_URL
@@ -704,6 +707,27 @@ export function GoogleSheetAutoSyncPanel({
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {onOpenShareResumes && (
+        <div className="pt-4 border-t border-black/[0.08] dark:border-white/[0.10] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <div className="text-xs font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+              Candidate Resume Access
+            </div>
+            <p className="text-[11px] text-[#6E6E73] dark:text-[#A1A1A6]">
+              Allow everyone in your portal to view uploaded Google Drive resumes without requesting Drive access.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenShareResumes}
+            className="h-9 px-3.5 rounded-[10px] border border-black/[0.10] dark:border-white/[0.14] bg-[#F5F5F7] dark:bg-[#2C2C2E] hover:bg-[#E8E8ED] dark:hover:bg-[#3A3A3C] text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Globe className="w-3.5 h-3.5 text-[#0071E3] dark:text-[#2997FF]" />
+            <span>Allow Everyone to View Resumes</span>
+          </button>
         </div>
       )}
     </section>
