@@ -32,29 +32,53 @@ export const db = initializeFirestore(
   FIRESTORE_DATABASE_ID
 );
 export const auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({ prompt: 'select_account' });
-
 export const GOOGLE_SHEETS_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets.readonly',
   'https://www.googleapis.com/auth/forms.body.readonly',
   'https://www.googleapis.com/auth/forms.responses.readonly',
 ] as const;
 
+export const googleProvider = new GoogleAuthProvider();
+GOOGLE_SHEETS_SCOPES.forEach((scope) => googleProvider.addScope(scope));
+googleProvider.setCustomParameters({ prompt: 'select_account' });
+
 const sheetsProvider = new GoogleAuthProvider();
 GOOGLE_SHEETS_SCOPES.forEach((scope) => sheetsProvider.addScope(scope));
-sheetsProvider.setCustomParameters({ prompt: 'consent select_account' });
+sheetsProvider.setCustomParameters({ prompt: 'select_account' });
 
 // Strict in-memory token storage (never persisted in localStorage or sessionStorage)
 let cachedSheetsAccessToken: string | null = null;
 let cachedSheetsTokenExpiresAt = 0;
 let cachedSheetsUserUid: string | null = null;
+const tokenListeners = new Set<(connected: boolean) => void>();
+
+function notifyTokenListeners() {
+  const connected = Boolean(getSheetsAccessToken());
+  tokenListeners.forEach((cb) => cb(connected));
+}
+
+function setCachedSheetsAccessToken(token: string, uid: string) {
+  cachedSheetsAccessToken = token;
+  cachedSheetsTokenExpiresAt = Date.now() + 50 * 60 * 1000;
+  cachedSheetsUserUid = uid;
+  notifyTokenListeners();
+}
+
+export function subscribeSheetsTokenChange(
+  listener: (connected: boolean) => void
+): () => void {
+  tokenListeners.add(listener);
+  return () => {
+    tokenListeners.delete(listener);
+  };
+}
 
 onAuthStateChanged(auth, (user) => {
   if (!user || (cachedSheetsUserUid && cachedSheetsUserUid !== user.uid)) {
     cachedSheetsAccessToken = null;
     cachedSheetsTokenExpiresAt = 0;
     cachedSheetsUserUid = null;
+    notifyTokenListeners();
   }
 });
 
@@ -71,6 +95,22 @@ export function getSheetsAccessToken(): string | null {
 export function clearSheetsAccessToken(): void {
   cachedSheetsAccessToken = null;
   cachedSheetsTokenExpiresAt = 0;
+  notifyTokenListeners();
+}
+
+export async function signInWithGoogleAndWorkspace(): Promise<{
+  user: User;
+  accessToken: string | null;
+}> {
+  const result = await signInWithPopup(auth, googleProvider);
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  if (credential?.accessToken) {
+    setCachedSheetsAccessToken(credential.accessToken, result.user.uid);
+  }
+  return {
+    user: result.user,
+    accessToken: credential?.accessToken ?? null,
+  };
 }
 
 export async function connectGoogleSheetsAccount(): Promise<{
@@ -103,9 +143,7 @@ export async function connectGoogleSheetsAccount(): Promise<{
             err as Parameters<typeof GoogleAuthProvider.credentialFromError>[0]
           );
           if (errCred?.accessToken) {
-            cachedSheetsAccessToken = errCred.accessToken;
-            cachedSheetsTokenExpiresAt = Date.now() + 50 * 60 * 1000;
-            cachedSheetsUserUid = currentUser.uid;
+            setCachedSheetsAccessToken(errCred.accessToken, currentUser.uid);
             return {
               user: currentUser,
               accessToken: errCred.accessToken,
@@ -122,13 +160,11 @@ export async function connectGoogleSheetsAccount(): Promise<{
   const credential = GoogleAuthProvider.credentialFromResult(result);
   if (!credential?.accessToken) {
     throw new Error(
-      'Google Sheets permission was not granted. Please allow read access to Google Sheets and try again.'
+      'Google Forms & Sheets permission was not granted. Please allow read access and try again.'
     );
   }
 
-  cachedSheetsAccessToken = credential.accessToken;
-  cachedSheetsTokenExpiresAt = Date.now() + 50 * 60 * 1000;
-  cachedSheetsUserUid = result.user.uid;
+  setCachedSheetsAccessToken(credential.accessToken, result.user.uid);
 
   return {
     user: result.user,

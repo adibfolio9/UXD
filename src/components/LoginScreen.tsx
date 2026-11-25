@@ -5,7 +5,6 @@ import {
   sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
-  signInWithPopup,
   signOut,
   updateProfile,
 } from 'firebase/auth';
@@ -22,7 +21,7 @@ import {
   RefreshCw,
   Sun,
 } from 'lucide-react';
-import { FIREBASE_PROJECT_ID, auth, googleProvider } from '../firebase';
+import { FIREBASE_PROJECT_ID, auth, signInWithGoogleAndWorkspace } from '../firebase';
 
 export type AuthMode = 'signin' | 'signup' | 'reset';
 
@@ -96,7 +95,7 @@ export function LoginScreen({
     setInfoMsg(null);
     setSubmitting(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithGoogleAndWorkspace();
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code ?? '';
       setErrorMsg(mapAuthError(code));

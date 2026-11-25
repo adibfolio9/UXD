@@ -645,10 +645,10 @@ export function ListView({
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGoogleSheet ? 'animate-spin' : ''}`} />
                 <span>
                   {isSyncingGoogleSheet
-                    ? 'Syncing Google Sheet...'
+                    ? 'Syncing Google Form...'
                     : googleSheetLinked
-                      ? 'Sync Google Sheet'
-                      : 'Auto-Sync Google Sheet'}
+                      ? 'Sync Google Form'
+                      : 'Auto-Sync Google Form'}
                 </span>
               </button>
               <button

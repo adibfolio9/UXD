@@ -371,9 +371,9 @@ export function GoogleSheetAutoSyncPanel({
                 </span>
               )}
               {needsReconnect && (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#B25000] dark:text-[#FF9F0A]">
-                  <span className="w-2 h-2 rounded-full bg-[#FF9500]" />
-                  Reconnect Google to resume auto-sync
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#0071E3] dark:text-[#2997FF]">
+                  <span className="w-2 h-2 rounded-full bg-[#0071E3] dark:bg-[#2997FF]" />
+                  Pre-attached · Ready to sync
                 </span>
               )}
             </div>
