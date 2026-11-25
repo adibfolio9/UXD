@@ -1,30 +1,58 @@
-import { clearSheetsAccessToken } from '../firebase';
+import { auth, clearSheetsAccessToken } from '../firebase';
 import { TaskItem } from '../types';
 import { extractExternalUrl } from '../utils/statusStyles';
 import { SheetsAuthExpiredError } from './googleSheetsSync';
 
-export function extractGoogleDriveFileId(rawUrl: string): string | null {
+export type GoogleDriveResourceKind =
+  | 'drive'
+  | 'document'
+  | 'presentation'
+  | 'spreadsheets';
+
+export interface GoogleDriveResource {
+  fileId: string;
+  kind: GoogleDriveResourceKind;
+}
+
+export class DriveFileRestrictedError extends Error {
+  readonly requiresOwnerShare = true;
+
+  constructor(
+    message = 'This resume is restricted in Google Drive. Ask the file owner to click "Allow Everyone to View", or sign in with Google if you have Drive access.'
+  ) {
+    super(message);
+    this.name = 'DriveFileRestrictedError';
+  }
+}
+
+export function extractGoogleDriveResource(
+  rawUrl: string
+): GoogleDriveResource | null {
   const clean = extractExternalUrl(rawUrl);
   if (!clean) return null;
 
   try {
     const url = new URL(clean);
-    if (url.hostname === 'drive.google.com') {
+    const host = url.hostname.toLowerCase();
+    if (host === 'drive.google.com' || host === 'drive.usercontent.google.com') {
       const idParam = url.searchParams.get('id');
       if (idParam && /^[a-zA-Z0-9_-]{10,128}$/.test(idParam.trim())) {
-        return idParam.trim();
+        return { fileId: idParam.trim(), kind: 'drive' };
       }
       const fileMatch = url.pathname.match(/\/file\/d\/([a-zA-Z0-9_-]{10,128})/);
       if (fileMatch?.[1]) {
-        return fileMatch[1];
+        return { fileId: fileMatch[1], kind: 'drive' };
       }
     }
-    if (url.hostname === 'docs.google.com') {
+    if (host === 'docs.google.com') {
       const docMatch = url.pathname.match(
-        /\/(?:document|presentation|spreadsheets)\/d\/([a-zA-Z0-9_-]{10,128})/
+        /\/(document|presentation|spreadsheets)\/d\/([a-zA-Z0-9_-]{10,128})/
       );
-      if (docMatch?.[1]) {
-        return docMatch[1];
+      if (docMatch?.[1] && docMatch?.[2]) {
+        return {
+          fileId: docMatch[2],
+          kind: docMatch[1] as Exclude<GoogleDriveResourceKind, 'drive'>,
+        };
       }
     }
   } catch {
@@ -32,6 +60,10 @@ export function extractGoogleDriveFileId(rawUrl: string): string | null {
   }
 
   return null;
+}
+
+export function extractGoogleDriveFileId(rawUrl: string): string | null {
+  return extractGoogleDriveResource(rawUrl)?.fileId ?? null;
 }
 
 export function collectDriveResumeFileIds(tasks: TaskItem[]): {
@@ -59,6 +91,43 @@ export interface DrivePreviewBlobResult {
   objectUrl: string;
   mimeType: string;
   fileName: string;
+  source?: 'drive_oauth' | 'authenticated_proxy';
+}
+
+function normalizeEffectivePreviewMime(
+  mime: string,
+  fileName: string
+): string {
+  const cleanMime = mime.split(';')[0].trim().toLowerCase();
+  const lowerName = fileName.toLowerCase();
+  if (
+    (!cleanMime ||
+      cleanMime === 'application/octet-stream' ||
+      cleanMime === 'application/binary') &&
+    lowerName.endsWith('.pdf')
+  ) {
+    return 'application/pdf';
+  }
+  if (cleanMime === 'image/jpg') {
+    return 'image/jpeg';
+  }
+  return cleanMime || 'application/pdf';
+}
+
+export function isInlineBrowserRenderableMime(
+  mimeType: string,
+  fileName: string
+): boolean {
+  const base = mimeType.split(';')[0].trim().toLowerCase();
+  if (base === 'application/pdf' || base === 'text/plain') return true;
+  if (base.startsWith('image/') && base !== 'image/svg+xml') return true;
+  if (
+    (base === 'application/octet-stream' || base === 'application/binary') &&
+    fileName.toLowerCase().endsWith('.pdf')
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export async function fetchGoogleDriveFilePreviewBlob(
@@ -118,7 +187,7 @@ export async function fetchGoogleDriveFilePreviewBlob(
   const blob = await mediaRes.blob();
   const effectiveMime = isGoogleWorkspaceDoc
     ? 'application/pdf'
-    : blob.type || rawMime;
+    : normalizeEffectivePreviewMime(blob.type || rawMime, fileName);
   const typedBlob =
     blob.type === effectiveMime ? blob : new Blob([blob], { type: effectiveMime });
 
@@ -126,6 +195,64 @@ export async function fetchGoogleDriveFilePreviewBlob(
     objectUrl: URL.createObjectURL(typedBlob),
     mimeType: effectiveMime,
     fileName,
+    source: 'drive_oauth',
+  };
+}
+
+export async function fetchAuthenticatedDrivePreviewViaProxy(
+  resource: GoogleDriveResource
+): Promise<DrivePreviewBlobResult> {
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error('Sign in to your account to preview candidate resumes.');
+  }
+
+  const idToken = await user.getIdToken();
+  const query = new URLSearchParams({
+    fileId: resource.fileId,
+    kind: resource.kind,
+  });
+
+  const resp = await fetch(`/api/resumes/drive-preview?${query.toString()}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+
+  if (!resp.ok) {
+    const errBody = (await resp.json().catch(() => ({}))) as {
+      error?: string;
+      requiresOwnerShare?: boolean;
+    };
+    if (errBody?.requiresOwnerShare) {
+      throw new DriveFileRestrictedError(errBody.error);
+    }
+    throw new Error(
+      errBody?.error || `Unable to preview resume (HTTP ${resp.status}).`
+    );
+  }
+
+  const headerFileName = resp.headers.get('x-resume-filename');
+  const fileName = headerFileName
+    ? decodeURIComponent(headerFileName)
+    : resource.kind === 'drive'
+      ? 'resume.pdf'
+      : `resume-${resource.kind}.pdf`;
+
+  const blob = await resp.blob();
+  const effectiveMime = normalizeEffectivePreviewMime(
+    blob.type || resp.headers.get('content-type') || 'application/pdf',
+    fileName
+  );
+  const typedBlob =
+    blob.type === effectiveMime ? blob : new Blob([blob], { type: effectiveMime });
+
+  return {
+    objectUrl: URL.createObjectURL(typedBlob),
+    mimeType: effectiveMime,
+    fileName,
+    source: 'authenticated_proxy',
   };
 }
 

@@ -115,17 +115,18 @@ export function getEmbeddableResumeUrl(raw: string): string | null {
 
   try {
     const url = new URL(clean);
-    if (url.hostname === 'drive.google.com') {
+    const host = url.hostname.toLowerCase();
+    if (host === 'drive.google.com' || host === 'drive.usercontent.google.com') {
       const idParam = url.searchParams.get('id');
       if (idParam) {
-        return `https://drive.google.com/file/d/${encodeURIComponent(idParam)}/preview`;
+        return `https://drive.google.com/file/d/${encodeURIComponent(idParam.trim())}/preview`;
       }
       const fileMatch = url.pathname.match(/\/file\/d\/([^/]+)/);
       if (fileMatch?.[1]) {
         return `https://drive.google.com/file/d/${encodeURIComponent(fileMatch[1])}/preview`;
       }
     }
-    if (url.hostname === 'docs.google.com') {
+    if (host === 'docs.google.com') {
       const docMatch = url.pathname.match(/\/(document|presentation|spreadsheets)\/d\/([^/]+)/);
       if (docMatch?.[1] && docMatch?.[2]) {
         return `https://docs.google.com/${docMatch[1]}/d/${encodeURIComponent(docMatch[2])}/preview`;

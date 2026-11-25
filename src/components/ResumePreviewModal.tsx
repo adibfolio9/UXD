@@ -1,20 +1,25 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
+  Download,
   ExternalLink,
   FileText,
   Globe,
+  Lock,
   RefreshCw,
   X,
 } from 'lucide-react';
-import { connectGoogleSheetsAccount, getSheetsAccessToken } from '../firebase';
+import { auth, connectGoogleSheetsAccount, getSheetsAccessToken } from '../firebase';
 import {
+  DriveFileRestrictedError,
   DrivePreviewBlobResult,
-  extractGoogleDriveFileId,
+  extractGoogleDriveResource,
+  fetchAuthenticatedDrivePreviewViaProxy,
   fetchGoogleDriveFilePreviewBlob,
   grantAnyoneReadPermission,
   isDriveFileReadableByAnyone,
+  isInlineBrowserRenderableMime,
 } from '../services/googleDriveResumes';
 import { SheetsAuthExpiredError } from '../services/googleSheetsSync';
 import { TaskItem } from '../types';
@@ -29,10 +34,32 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
   const [driveBlob, setDriveBlob] = useState<DrivePreviewBlobResult | null>(null);
   const [loadingDrive, setLoadingDrive] = useState(false);
   const [driveError, setDriveError] = useState<string | null>(null);
+  const [restrictedByOwner, setRestrictedByOwner] = useState(false);
+  const [forceEmbedFallback, setForceEmbedFallback] = useState(false);
   const [isPublicShared, setIsPublicShared] = useState<boolean | null>(null);
   const [confirmingShare, setConfirmingShare] = useState(false);
   const [sharingFile, setSharingFile] = useState(false);
   const [shareFeedback, setShareFeedback] = useState<string | null>(null);
+
+  const activeBlobUrlRef = useRef<string | null>(null);
+  const loadSeqRef = useRef(0);
+
+  const replaceDriveBlob = useCallback((next: DrivePreviewBlobResult | null) => {
+    if (activeBlobUrlRef.current && activeBlobUrlRef.current !== next?.objectUrl) {
+      URL.revokeObjectURL(activeBlobUrlRef.current);
+    }
+    activeBlobUrlRef.current = next?.objectUrl ?? null;
+    setDriveBlob(next);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (activeBlobUrlRef.current) {
+        URL.revokeObjectURL(activeBlobUrlRef.current);
+        activeBlobUrlRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!task) return;
@@ -46,64 +73,94 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [task, onClose]);
 
-  const driveFileId = task ? extractGoogleDriveFileId(task.resumeUrl) : null;
+  const driveResource = task ? extractGoogleDriveResource(task.resumeUrl) : null;
+  const driveFileId = driveResource?.fileId ?? null;
+  const driveKind = driveResource?.kind ?? null;
 
-  useEffect(() => {
+  const loadPreviewForTask = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
+
     setDriveError(null);
-    setConfirmingShare(false);
+    setRestrictedByOwner(false);
+    setForceEmbedFallback(false);
     setShareFeedback(null);
     setIsPublicShared(null);
 
-    let revoked = false;
-    let activeObjectUrl: string | null = null;
-
-    if (!task || !driveFileId) {
-      setDriveBlob(null);
-      setLoadingDrive(false);
-      return;
-    }
-
-    const token = getSheetsAccessToken();
-    if (!token) {
-      setDriveBlob(null);
+    if (!task || !driveFileId || !driveKind) {
+      replaceDriveBlob(null);
       setLoadingDrive(false);
       return;
     }
 
     setLoadingDrive(true);
-    void Promise.all([
-      fetchGoogleDriveFilePreviewBlob(driveFileId, token),
-      isDriveFileReadableByAnyone(driveFileId, token).catch(() => null),
-    ])
-      .then(([blobRes, anyoneReadable]) => {
-        if (revoked) {
-          URL.revokeObjectURL(blobRes.objectUrl);
+    const token = getSheetsAccessToken();
+
+    try {
+      if (token) {
+        try {
+          const [blobRes, anyoneReadable] = await Promise.all([
+            fetchGoogleDriveFilePreviewBlob(driveFileId, token),
+            isDriveFileReadableByAnyone(driveFileId, token).catch(() => null),
+          ]);
+          if (seq !== loadSeqRef.current) {
+            URL.revokeObjectURL(blobRes.objectUrl);
+            return;
+          }
+          replaceDriveBlob(blobRes);
+          if (anyoneReadable !== null) {
+            setIsPublicShared(anyoneReadable);
+          }
+          return;
+        } catch (oauthErr) {
+          if (seq !== loadSeqRef.current) return;
+          // Non-owner Google accounts or expired OAuth tokens seamlessly fall back to
+          // the authenticated server preview proxy below.
+          if (!(oauthErr instanceof SheetsAuthExpiredError) && !auth.currentUser) {
+            throw oauthErr;
+          }
+        }
+      }
+
+      if (auth.currentUser) {
+        const proxyBlob = await fetchAuthenticatedDrivePreviewViaProxy({
+          fileId: driveFileId,
+          kind: driveKind,
+        });
+        if (seq !== loadSeqRef.current) {
+          URL.revokeObjectURL(proxyBlob.objectUrl);
           return;
         }
-        activeObjectUrl = blobRes.objectUrl;
-        setDriveBlob(blobRes);
-        if (anyoneReadable !== null) {
-          setIsPublicShared(anyoneReadable);
-        }
-      })
-      .catch((err) => {
-        if (revoked) return;
-        setDriveBlob(null);
-        if (err instanceof SheetsAuthExpiredError) {
-          setDriveError(err.message);
-        }
-      })
-      .finally(() => {
-        if (!revoked) setLoadingDrive(false);
-      });
-
-    return () => {
-      revoked = true;
-      if (activeObjectUrl) {
-        URL.revokeObjectURL(activeObjectUrl);
+        replaceDriveBlob(proxyBlob);
+        setIsPublicShared(true);
+      } else {
+        replaceDriveBlob(null);
       }
+    } catch (err) {
+      if (seq !== loadSeqRef.current) return;
+      replaceDriveBlob(null);
+      if (err instanceof DriveFileRestrictedError) {
+        setRestrictedByOwner(true);
+        setIsPublicShared(false);
+      } else {
+        setDriveError(
+          err instanceof Error ? err.message : 'Unable to load resume preview.'
+        );
+      }
+    } finally {
+      if (seq === loadSeqRef.current) {
+        setLoadingDrive(false);
+      }
+    }
+  }, [task?.id, driveFileId, driveKind, replaceDriveBlob]);
+
+  useEffect(() => {
+    setConfirmingShare(false);
+    void loadPreviewForTask();
+    return () => {
+      loadSeqRef.current += 1;
+      replaceDriveBlob(null);
     };
-  }, [task?.id, task?.resumeUrl, driveFileId]);
+  }, [loadPreviewForTask, replaceDriveBlob]);
 
   if (!task) return null;
 
@@ -111,22 +168,19 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
   const embedHref = getEmbeddableResumeUrl(task.resumeUrl);
 
   const handleLoadWithGoogle = async () => {
+    if (!driveFileId) return;
     setDriveError(null);
+    setRestrictedByOwner(false);
     setLoadingDrive(true);
     try {
       const { accessToken } = await connectGoogleSheetsAccount();
-      if (driveFileId) {
-        const [blobRes, anyoneReadable] = await Promise.all([
-          fetchGoogleDriveFilePreviewBlob(driveFileId, accessToken),
-          isDriveFileReadableByAnyone(driveFileId, accessToken).catch(() => null),
-        ]);
-        setDriveBlob((prev) => {
-          if (prev?.objectUrl) URL.revokeObjectURL(prev.objectUrl);
-          return blobRes;
-        });
-        if (anyoneReadable !== null) {
-          setIsPublicShared(anyoneReadable);
-        }
+      const [blobRes, anyoneReadable] = await Promise.all([
+        fetchGoogleDriveFilePreviewBlob(driveFileId, accessToken),
+        isDriveFileReadableByAnyone(driveFileId, accessToken).catch(() => null),
+      ]);
+      replaceDriveBlob(blobRes);
+      if (anyoneReadable !== null) {
+        setIsPublicShared(anyoneReadable);
       }
     } catch (err) {
       setDriveError(
@@ -138,7 +192,7 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
   };
 
   const handleConfirmMakePublic = async () => {
-    if (!driveFileId) return;
+    if (!driveFileId || !driveKind) return;
     setDriveError(null);
     setShareFeedback(null);
     setSharingFile(true);
@@ -150,12 +204,35 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
       }
       const outcome = await grantAnyoneReadPermission(driveFileId, token);
       setIsPublicShared(true);
+      setRestrictedByOwner(false);
       setConfirmingShare(false);
       setShareFeedback(
         outcome === 'already_public'
-          ? 'Already viewable by anyone with the link.'
-          : 'Updated! Everyone can now view this resume.'
+          ? 'Already viewable by all logged-in users and anyone with the link.'
+          : 'Updated! All logged-in users can now preview this resume.'
       );
+
+      if (!driveBlob) {
+        setLoadingDrive(true);
+        try {
+          const blobRes = await fetchGoogleDriveFilePreviewBlob(driveFileId, token);
+          replaceDriveBlob(blobRes);
+        } catch {
+          if (auth.currentUser) {
+            try {
+              const proxyRes = await fetchAuthenticatedDrivePreviewViaProxy({
+                fileId: driveFileId,
+                kind: driveKind,
+              });
+              replaceDriveBlob(proxyRes);
+            } catch {
+              // Keep embed fallback available if blob load fails
+            }
+          }
+        } finally {
+          setLoadingDrive(false);
+        }
+      }
     } catch (err) {
       setDriveError(
         err instanceof Error
@@ -167,7 +244,12 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
     }
   };
 
-  const isImageBlob = Boolean(driveBlob?.mimeType.startsWith('image/'));
+  const isImageBlob = Boolean(
+    driveBlob?.mimeType.startsWith('image/') && !driveBlob.mimeType.includes('svg')
+  );
+  const canRenderBlobInline = Boolean(
+    driveBlob && isInlineBrowserRenderableMime(driveBlob.mimeType, driveBlob.fileName)
+  );
 
   return (
     <div
@@ -201,7 +283,7 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
             {driveFileId && isPublicShared === true && (
               <span className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#28CD41]/10 dark:bg-[#30D158]/15 text-[11px] font-medium text-[#1E7F34] dark:text-[#30D158] whitespace-nowrap">
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Viewable by Everyone</span>
+                <span>Viewable by All Users</span>
               </span>
             )}
 
@@ -235,8 +317,12 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
                 rel={driveBlob ? undefined : 'noopener noreferrer'}
                 className="h-8 px-3 rounded-lg bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] text-white text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
               >
+                {driveBlob ? (
+                  <Download className="w-3.5 h-3.5" />
+                ) : (
+                  <ExternalLink className="w-3.5 h-3.5" />
+                )}
                 <span>{driveBlob ? 'Download' : 'Open in New Tab'}</span>
-                <ExternalLink className="w-3.5 h-3.5" />
               </a>
             )}
             <button
@@ -253,7 +339,7 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
         {confirmingShare && driveFileId && (
           <div className="px-5 py-2.5 bg-[#0071E3]/[0.07] dark:bg-[#0A84FF]/[0.14] border-b border-[#0071E3]/20 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
             <span className="text-[#1D1D1F] dark:text-[#F5F5F7]">
-              Allow anyone with the link to view this Google Drive resume file (read-only)?
+              Allow all logged-in team members and anyone with the link to preview this Google Drive resume (read-only)?
             </span>
             <div className="flex items-center gap-2 shrink-0">
               <button
@@ -297,7 +383,7 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
           {loadingDrive ? (
             <div className="h-full flex flex-col items-center justify-center gap-2 text-xs text-[#6E6E73] dark:text-[#A1A1A6]">
               <RefreshCw className="w-5 h-5 animate-spin text-[#0071E3] dark:text-[#2997FF]" />
-              <span>Loading resume preview from Google Drive...</span>
+              <span>Loading resume preview...</span>
             </div>
           ) : driveBlob ? (
             isImageBlob ? (
@@ -308,13 +394,113 @@ export function ResumePreviewModal({ task, onClose }: ResumePreviewModalProps) {
                   className="max-w-full max-h-full object-contain rounded-lg shadow-sm"
                 />
               </div>
-            ) : (
+            ) : canRenderBlobInline ? (
               <iframe
                 src={driveBlob.objectUrl}
                 title={`Resume for ${task.fullName}`}
                 className="w-full h-full border-0 bg-white"
               />
+            ) : embedHref && (isPublicShared === true || forceEmbedFallback) ? (
+              <iframe
+                src={embedHref}
+                title={`Resume for ${task.fullName}`}
+                className="w-full h-full border-0 bg-white"
+                allow="autoplay"
+              />
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center p-8 text-center space-y-4">
+                <div className="w-12 h-12 rounded-2xl bg-[#0071E3]/10 dark:bg-[#0A84FF]/15 text-[#0071E3] dark:text-[#2997FF] flex items-center justify-center">
+                  <FileText className="w-6 h-6" />
+                </div>
+                <div className="space-y-1 max-w-md">
+                  <p className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                    {driveBlob.fileName}
+                  </p>
+                  <p className="text-xs text-[#6E6E73] dark:text-[#A1A1A6] leading-relaxed">
+                    This document format cannot be rendered natively by the browser as a local file. Download it directly or open it in Google Drive&apos;s viewer.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-2.5">
+                  <a
+                    href={driveBlob.objectUrl}
+                    download={driveBlob.fileName}
+                    className="h-9 px-4 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] text-white text-xs font-medium inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download {driveBlob.fileName}</span>
+                  </a>
+                  {embedHref && (
+                    <button
+                      type="button"
+                      onClick={() => setForceEmbedFallback(true)}
+                      className="h-9 px-4 rounded-xl border border-black/[0.10] dark:border-white/[0.14] bg-white dark:bg-[#2C2C2E] hover:bg-[#E8E8ED] dark:hover:bg-[#3A3A3C] text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] transition-colors"
+                    >
+                      Try Google Viewer
+                    </button>
+                  )}
+                </div>
+              </div>
             )
+          ) : restrictedByOwner && !forceEmbedFallback ? (
+            <div className="h-full flex flex-col items-center justify-center p-8 text-center space-y-4">
+              <div className="w-12 h-12 rounded-2xl bg-[#FF9500]/12 dark:bg-[#FF9F0A]/15 text-[#B25000] dark:text-[#FF9F0A] flex items-center justify-center">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div className="space-y-1.5 max-w-md">
+                <p className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                  Google Drive File Access Restricted
+                </p>
+                <p className="text-xs text-[#6E6E73] dark:text-[#A1A1A6] leading-relaxed">
+                  This resume is currently private in the Google Form owner&apos;s Drive. Ask the owner to click{' '}
+                  <span className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">
+                    Allow Everyone to View
+                  </span>
+                  , or load it directly with your Google Drive account.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2.5">
+                {driveFileId && (
+                  <button
+                    type="button"
+                    onClick={() => void handleLoadWithGoogle()}
+                    className="h-9 px-4 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] dark:bg-[#0A84FF] dark:hover:bg-[#2997FF] text-white text-xs font-medium inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Direct Drive Preview</span>
+                  </button>
+                )}
+                {driveFileId && !confirmingShare && (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingShare(true)}
+                    className="h-9 px-4 rounded-xl border border-black/[0.10] dark:border-white/[0.14] bg-white dark:bg-[#2C2C2E] hover:bg-[#E8E8ED] dark:hover:bg-[#3A3A3C] text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-[#0071E3] dark:text-[#2997FF]" />
+                    <span>Allow Everyone to View</span>
+                  </button>
+                )}
+                {embedHref && (
+                  <button
+                    type="button"
+                    onClick={() => setForceEmbedFallback(true)}
+                    className="h-9 px-3.5 rounded-xl border border-black/[0.10] dark:border-white/[0.14] bg-white dark:bg-[#2C2C2E] hover:bg-[#E8E8ED] dark:hover:bg-[#3A3A3C] text-xs font-medium text-[#6E6E73] dark:text-[#A1A1A6] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] transition-colors"
+                  >
+                    Try Drive Viewer
+                  </button>
+                )}
+                {externalHref !== '#' && (
+                  <a
+                    href={externalHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="h-9 px-3.5 rounded-xl border border-black/[0.10] dark:border-white/[0.14] bg-white dark:bg-[#2C2C2E] hover:bg-[#E8E8ED] dark:hover:bg-[#3A3A3C] text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <span>Open in New Tab</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </div>
+            </div>
           ) : embedHref ? (
             <iframe
               src={embedHref}

@@ -10,6 +10,152 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
 const MODEL_ID = 'gemini-4-hydrogen';
+const MAX_RESUME_BYTES = 25 * 1024 * 1024;
+
+function loadFirebaseWebApiKey(): string {
+  try {
+    const configPath = path.resolve(__dirname, 'firebase-applet-config.json');
+    const raw = fs.readFileSync(configPath, 'utf8');
+    const parsed = JSON.parse(raw) as { apiKey?: unknown };
+    return typeof parsed.apiKey === 'string' ? parsed.apiKey.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+const FIREBASE_WEB_API_KEY = loadFirebaseWebApiKey();
+
+async function verifyFirebaseUserFromRequest(
+  req: Request
+): Promise<{ uid: string; email: string }> {
+  const authHeader = req.headers.authorization || '';
+  const match = authHeader.match(/^Bearer\s+([A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+)$/);
+  if (!match?.[1]) {
+    const err = new Error('Sign in to your account to preview candidate resumes.') as Error & {
+      statusCode?: number;
+    };
+    err.statusCode = 401;
+    throw err;
+  }
+
+  if (!FIREBASE_WEB_API_KEY) {
+    const err = new Error('Firebase authentication configuration is missing on the server.') as Error & {
+      statusCode?: number;
+    };
+    err.statusCode = 500;
+    throw err;
+  }
+
+  const verifyResp = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ idToken: match[1] }),
+      signal: AbortSignal.timeout(10000),
+    }
+  );
+
+  if (!verifyResp.ok) {
+    const err = new Error('Your login session has expired. Please sign in again.') as Error & {
+      statusCode?: number;
+    };
+    err.statusCode = 401;
+    throw err;
+  }
+
+  const data = (await verifyResp.json().catch(() => ({}))) as {
+    users?: Array<{
+      localId?: string;
+      email?: string;
+      emailVerified?: boolean;
+      disabled?: boolean;
+    }>;
+  };
+
+  const user = data.users?.[0];
+  if (!user?.localId || user.disabled) {
+    const err = new Error('Your login session is invalid or disabled.') as Error & {
+      statusCode?: number;
+    };
+    err.statusCode = 401;
+    throw err;
+  }
+
+  if (user.emailVerified !== true) {
+    const err = new Error('Please verify your email address before previewing resumes.') as Error & {
+      statusCode?: number;
+    };
+    err.statusCode = 403;
+    throw err;
+  }
+
+  return {
+    uid: user.localId,
+    email: user.email || '',
+  };
+}
+
+const SAFE_RESUME_MIME_TYPES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'text/plain',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/rtf',
+  'application/octet-stream',
+]);
+
+function resolveSafeResumeMimeType(
+  rawContentType: string,
+  fileName: string,
+  buffer: Buffer
+): string | null {
+  const baseType = rawContentType.split(';')[0].trim().toLowerCase();
+  if (
+    baseType === 'text/html' ||
+    baseType === 'application/xhtml+xml' ||
+    baseType === 'image/svg+xml' ||
+    baseType.includes('javascript')
+  ) {
+    return null;
+  }
+
+  if (baseType === 'image/jpg') return 'image/jpeg';
+  if (
+    SAFE_RESUME_MIME_TYPES.has(baseType) &&
+    baseType !== 'application/octet-stream'
+  ) {
+    return baseType;
+  }
+
+  const ext = path.extname(fileName).toLowerCase();
+  if (buffer.length >= 5 && buffer.subarray(0, 5).toString('ascii') === '%PDF-') {
+    return 'application/pdf';
+  }
+  if (ext === '.pdf') return 'application/pdf';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.txt') return 'text/plain';
+  if (ext === '.doc') return 'application/msword';
+  if (ext === '.docx') {
+    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  }
+  if (ext === '.rtf') return 'application/rtf';
+
+  if (baseType === 'application/octet-stream' || baseType === 'application/binary' || !baseType) {
+    return 'application/octet-stream';
+  }
+
+  return null;
+}
 
 interface GroundingSource {
   title: string;
@@ -508,6 +654,136 @@ async function startServer() {
       const message =
         error instanceof Error ? error.message : 'Unable to fetch Google Sheet.';
       res.status(502).json({ error: message });
+    }
+  });
+
+  app.get('/api/resumes/drive-preview', async (req: Request, res: Response) => {
+    try {
+      await verifyFirebaseUserFromRequest(req);
+
+      const fileId = clampField(req.query.fileId, 140);
+      if (!/^[a-zA-Z0-9_-]{10,128}$/.test(fileId)) {
+        res.status(400).json({ error: 'Invalid Google Drive file ID.' });
+        return;
+      }
+
+      const rawKind = clampField(req.query.kind, 32).toLowerCase() || 'drive';
+      const allowedKinds = new Set(['drive', 'document', 'presentation', 'spreadsheets']);
+      if (!allowedKinds.has(rawKind)) {
+        res.status(400).json({ error: 'Unsupported Google file type.' });
+        return;
+      }
+
+      const safeId = encodeURIComponent(fileId);
+      const targetUrl =
+        rawKind === 'document'
+          ? `https://docs.google.com/document/d/${safeId}/export?format=pdf`
+          : rawKind === 'presentation'
+            ? `https://docs.google.com/presentation/d/${safeId}/export/pdf`
+            : rawKind === 'spreadsheets'
+              ? `https://docs.google.com/spreadsheets/d/${safeId}/export?format=pdf`
+              : `https://drive.google.com/uc?export=download&confirm=t&id=${safeId}`;
+
+      const upstream = await fetch(targetUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'UXD-Vault-Resume-Preview/1.0',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20000),
+      });
+
+      const finalUrl = upstream.url || targetUrl;
+      let finalHost = '';
+      try {
+        finalHost = new URL(finalUrl).hostname.toLowerCase();
+      } catch {
+        finalHost = '';
+      }
+
+      const isAllowedGoogleHost =
+        finalHost === 'drive.google.com' ||
+        finalHost === 'docs.google.com' ||
+        finalHost.endsWith('.googleusercontent.com') ||
+        finalHost.endsWith('.google.com');
+
+      const rawContentType = (upstream.headers.get('content-type') || '').toLowerCase();
+
+      if (
+        upstream.status === 401 ||
+        upstream.status === 403 ||
+        finalHost === 'accounts.google.com' ||
+        !isAllowedGoogleHost ||
+        rawContentType.includes('text/html')
+      ) {
+        res.status(403).json({
+          requiresOwnerShare: true,
+          error:
+            'This resume is restricted in Google Drive. Ask the file owner to click "Allow Everyone to View", or sign in with Google if you have Drive access.',
+        });
+        return;
+      }
+
+      if (!upstream.ok) {
+        res.status(upstream.status === 404 ? 404 : 502).json({
+          error:
+            upstream.status === 404
+              ? 'This resume file could not be found in Google Drive.'
+              : `Google Drive returned HTTP ${upstream.status} while loading the resume.`,
+        });
+        return;
+      }
+
+      const declaredLength = Number(upstream.headers.get('content-length') || '0');
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_RESUME_BYTES) {
+        res.status(413).json({ error: 'Resume file exceeds the 25 MB preview limit.' });
+        return;
+      }
+
+      const arrayBuf = await upstream.arrayBuffer();
+      if (arrayBuf.byteLength > MAX_RESUME_BYTES) {
+        res.status(413).json({ error: 'Resume file exceeds the 25 MB preview limit.' });
+        return;
+      }
+
+      const buffer = Buffer.from(arrayBuf);
+      const disp = upstream.headers.get('content-disposition') || '';
+      const fnMatch =
+        disp.match(/filename\*=UTF-8''([^;\n]+)/i) ??
+        disp.match(/filename="?([^";\n]+)"?/i);
+      const rawFileName = fnMatch?.[1]
+        ? decodeURIComponent(fnMatch[1]).replace(/[\r\n"]/g, '').trim()
+        : '';
+      const fileName =
+        rawFileName || (rawKind === 'drive' ? 'resume.pdf' : `resume-${rawKind}.pdf`);
+
+      const safeMime = resolveSafeResumeMimeType(rawContentType, fileName, buffer);
+      if (!safeMime) {
+        res.status(415).json({
+          error: 'Unsupported or unsafe resume file format for inline preview.',
+        });
+        return;
+      }
+
+      const asciiFileName =
+        fileName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\;\r\n]/g, '_').trim() ||
+        'resume.pdf';
+
+      res.setHeader('Content-Type', safeMime);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Content-Disposition', `inline; filename="${asciiFileName}"`);
+      res.setHeader('X-Resume-Filename', encodeURIComponent(fileName));
+      res.send(buffer);
+    } catch (error) {
+      const errObj = error as { statusCode?: number; message?: string };
+      const status =
+        typeof errObj?.statusCode === 'number' && errObj.statusCode >= 400 && errObj.statusCode < 600
+          ? errObj.statusCode
+          : 502;
+      res.status(status).json({
+        error: errObj?.message || 'Unable to load resume preview.',
+      });
     }
   });
 
